@@ -1,0 +1,42 @@
+{
+  "name": "wiggler",
+  "bin": {
+    "wiggler": "src/bin/index.ts"
+  },
+  "module": "src/bin/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "check": "bun run typecheck && bun run lint && bun run test",
+    "db:migrate": "bun run wiggler db:migrate",
+    "db:status": "bun run wiggler db:status",
+    "db:rollback": "bun run wiggler db:rollback",
+    "format": "bun x prettier --write .",
+    "lint:fix": "bun x eslint --fix --cache .",
+    "lint": "bun x eslint --cache .",
+    "test": "find src -name '*.test.ts' -print0 | xargs -0 bun test",
+    "typecheck": "mkdir -p .cache && bun x --bun tsc --noEmit --incremental --tsBuildInfoFile ./.cache/tsconfig.tsbuildinfo",
+    "wiggler": "bun run src/bin/index.ts",
+    "pm": "bun run src/bin/index.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/bun": "latest",
+    "@types/node": "^24.10.1",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.5.13",
+    "eslint": "^9.39.1",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "eslint-plugin-unused-imports": "^4.3.0",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1"
+  },
+  "dependencies": {
+    "kleur": "^4.1.5",
+    "kysely": "^0.28.15",
+    "pg": "^8.20.0",
+    "ws": "^8.18.0",
+    "zod": "^4.3.6"
+  }
+}

@@ -1,0 +1,34 @@
+# Secrets and local environment
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Test and coverage output
+coverage/
+
+# Logs
+*.log
+
+# TypeScript
+*.tsbuildinfo
+
+# Local scratch
+tmp/
+.tmp/
+.claude/
+
+# Cache
+.cache/
+.eslintcache
+
+# OS and editor noise
+.DS_Store
+.idea/
+.vscode/
