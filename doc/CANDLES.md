@@ -1,21 +1,21 @@
 # Candles
 
-Wiggler ingests OHLCV candles from four public CEX REST endpoints and
+Wiggler ingests OHLCV candles from three public CEX REST endpoints and
 stores one row per `(source, symbol, timeframe, open_time)` in the
 `candles` table.
 
-## Why these four sources
+## Why these three sources
 
-Of the seven major CEX feeds we considered, only these four expose **deep
-historical 1-minute history** through their public REST endpoints AND are
-reachable from a US IP:
+Of the major CEX feeds we considered, only these three expose **deep
+historical 1-minute history** through their public REST endpoints, are
+reachable from a US IP, AND tolerate multi-symbol parallel backfills
+without aggressive per-IP throttling:
 
 | source     | endpoint                                          | per-request limit | 1y of 1m candles |
 |------------|---------------------------------------------------|-------------------|------------------|
 | coinbase   | `GET /products/{pair}/candles?granularity=60`     | 300               | ~5h per call     |
 | binance    | `GET /api/v3/klines?interval=1m`                  | 1000              | ~16h per call    |
 | bitstamp   | `GET /api/v2/ohlc/{pair}/?step=60`                | 1000              | ~16h per call    |
-| bitfinex   | `GET /v2/candles/trade:1m:{pair}/hist`            | 10000             | ~7d per call     |
 
 Excluded:
 
@@ -25,6 +25,12 @@ Excluded:
   403 ("configured to block access from your country") on US IPs. Bybit
   operates no US entity / fallback host. Add support if running outside
   the US becomes a goal.
+- **Bitfinex** — was previously included; per-request throughput is
+  excellent (10000 candles per call) but the per-IP rate limit is
+  aggressive enough that even 2 concurrent symbols sustain 429s past
+  our 6-attempt exponential-backoff ceiling. BTC bitfinex data already
+  in `candles` is left in place; new-symbol coverage relies on the
+  three remaining sources.
 
 ## Per-source quirks
 
@@ -33,8 +39,6 @@ Every source's REST shape is slightly different. The notable gotchas:
 - **Coinbase** returns `[time, low, high, open, close, volume]` (note the
   `low`/`high`/`open`/`close` order — different from everyone else) in
   **descending** order. We re-sort to ascending.
-- **Bitfinex** returns `[mts, open, close, high, low, volume]` — `close`
-  before `high` before `low`. Easy to swap by mistake.
 - **Bitstamp** returns rows as named-key objects, not arrays. Timestamps
   are unix **seconds** as strings.
 - **Binance** uses **USDT** quotes (`BTCUSDT`); the others use plain USD.
@@ -93,7 +97,6 @@ the published ceiling per source:
 | coinbase | ~10/s     | ~5/s (200ms gap)  |
 | binance  | 1200 weight/min, klines costs 2 | ~5/s (200ms gap) |
 | bitstamp | 8000 / 10min | ~5/s (200ms gap) |
-| bitfinex | ~90/min   | ~0.7/s (1500ms gap) |
 
 Each fetcher handles `429` and 5xx responses with exponential backoff
 (starting at 250ms, capped at 10s, max 5 attempts). Backoff events log at
@@ -101,13 +104,12 @@ Each fetcher handles `429` and 5xx responses with exponential backoff
 
 ## Output
 
-Wall-clock for a full 1-year × 1m × 4-source × 1-symbol backfill is
+Wall-clock for a full 1-year × 1m × 3-source × 1-symbol backfill is
 roughly:
 
 - coinbase: ~525,600 candles / 300 per req × 200ms ≈ **6 min**
 - binance: ~525,600 / 1000 × 200ms ≈ **2 min**
 - bitstamp: ~525,600 / 1000 × 200ms ≈ **2 min**
-- bitfinex: ~525,600 / 10000 × 1500ms ≈ **1.5 min**
 
 Sources run in parallel (each has its own rate limit), so the wall-clock
 is dominated by the slowest one (~6 min).

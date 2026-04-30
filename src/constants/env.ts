@@ -3,7 +3,6 @@ const defaultCoinbaseRestBaseUrl = "https://api.exchange.coinbase.com";
 // Binance.com is geo-blocked from the US (HTTP 451). Default to Binance.US.
 const defaultBinanceRestBaseUrl = "https://api.binance.us";
 const defaultBitstampRestBaseUrl = "https://www.bitstamp.net";
-const defaultBitfinexRestBaseUrl = "https://api-pub.bitfinex.com";
 
 function parsePositiveInt(raw: string | undefined, label: string): number | undefined {
   if (raw === undefined || raw.trim() === "") {
@@ -62,9 +61,6 @@ export const env = {
   },
   get bitstampRestBaseUrl(): string {
     return process.env.BITSTAMP_REST_BASE_URL ?? defaultBitstampRestBaseUrl;
-  },
-  get bitfinexRestBaseUrl(): string {
-    return process.env.BITFINEX_REST_BASE_URL ?? defaultBitfinexRestBaseUrl;
   },
   get logLevel(): string {
     return process.env.LOG_LEVEL ?? "info";

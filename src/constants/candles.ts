@@ -20,7 +20,7 @@ export const TIMEFRAME_MS: Readonly<Record<Timeframe, number>> = {
 };
 
 /**
- * Canonical list of CEX sources we ingest 1-minute candles from. These four
+ * Canonical list of CEX sources we ingest 1-minute candles from. These three
  * support deep historical 1m history (≥1 year) via REST and are reachable
  * from US IPs.
  *
@@ -31,11 +31,17 @@ export const TIMEFRAME_MS: Readonly<Record<Timeframe, number>> = {
  *     access from your country"). Bybit operates no US entity / fallback
  *     host comparable to Binance.US. Add support if/when running outside
  *     the US becomes a goal.
+ *   - Bitfinex: previously listed here but removed because their per-IP
+ *     rate limits make multi-symbol parallel backfills unreliable —
+ *     even at 2 concurrent symbols, the public `/v2/candles` endpoint
+ *     returns sustained 429s and our 6-attempt exponential-backoff
+ *     fetcher couldn't get through. BTC bitfinex data already in
+ *     `candles` is left in place; new symbol coverage relies on the
+ *     three remaining sources.
  */
 export const CANDLE_SOURCES = [
   "coinbase",
   "binance",
   "bitstamp",
-  "bitfinex",
 ] as const;
 export type CandleSource = (typeof CANDLE_SOURCES)[number];

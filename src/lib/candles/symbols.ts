@@ -32,21 +32,10 @@ export function fromBitstampPair(pair: string): string {
   return stripped.toUpperCase();
 }
 
-export function toBitfinexPair(symbol: string): string {
-  // Bitfinex prefixes trading pairs with `t` and uses uppercase, e.g. `tBTCUSD`.
-  return `t${symbol.toUpperCase()}USD`;
-}
-export function fromBitfinexPair(pair: string): string {
-  const upper = pair.toUpperCase();
-  const noPrefix = upper.startsWith("T") ? upper.slice(1) : upper;
-  return noPrefix.endsWith("USD") ? noPrefix.slice(0, -3) : noPrefix;
-}
-
 const TO_PAIR: Readonly<Record<CandleSource, (s: string) => string>> = {
   coinbase: toCoinbasePair,
   binance: toBinancePair,
   bitstamp: toBitstampPair,
-  bitfinex: toBitfinexPair,
 };
 
 /** Returns the source's expected pair string for a wiggler `symbol`. */

@@ -1,7 +1,7 @@
 # wiggler-data
 
-Bun + TypeScript ingestion for historical OHLCV candles across four public
-CEX REST endpoints (Coinbase, Binance.US, Bitstamp, Bitfinex).
+Bun + TypeScript ingestion for historical OHLCV candles across three public
+CEX REST endpoints (Coinbase, Binance.US, Bitstamp).
 Idempotent at the row level: re-running `candles:sync` over an
 already-fetched window is a cheap no-op, and crashed runs resume from the
 last open_time on disk.
@@ -100,7 +100,6 @@ bun wiggler candles:distributions --json
 | `COINBASE_REST_BASE_URL` | `https://api.exchange.coinbase.com` | Coinbase Exchange |
 | `BINANCE_REST_BASE_URL` | `https://api.binance.us` | Binance.US (binance.com is geo-blocked from the US) |
 | `BITSTAMP_REST_BASE_URL` | `https://www.bitstamp.net` | Bitstamp |
-| `BITFINEX_REST_BASE_URL` | `https://api-pub.bitfinex.com` | Bitfinex |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `DATABASE_POOL_MAX` | (pg default) | Override pg pool max |
 

@@ -18,10 +18,8 @@
 - **Binance.US REST** (`https://api.binance.us`) — Binance.com is
   geo-blocked from the US.
 - **Bitstamp REST** (`https://www.bitstamp.net`)
-- **Bitfinex REST** (`https://api-pub.bitfinex.com`)
-- **Bybit REST** (`https://api.bybit.com`)
 
-All five are public and require no authentication. See
+All three are public and require no authentication. See
 [CANDLES.md](./CANDLES.md) for per-source REST shapes and rate limits.
 
 ## Tooling

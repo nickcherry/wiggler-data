@@ -126,8 +126,6 @@ function restBaseUrlFor(source: string): string {
       return env.binanceRestBaseUrl;
     case "bitstamp":
       return env.bitstampRestBaseUrl;
-    case "bitfinex":
-      return env.bitfinexRestBaseUrl;
     default:
       return "(unknown source)";
   }

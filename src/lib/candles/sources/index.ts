@@ -1,6 +1,5 @@
 import type { CandleSource } from "@wiggler/constants/candles";
 import { fetchBinanceCandles } from "@wiggler/lib/candles/sources/binance";
-import { fetchBitfinexCandles } from "@wiggler/lib/candles/sources/bitfinex";
 import { fetchBitstampCandles } from "@wiggler/lib/candles/sources/bitstamp";
 import { fetchCoinbaseCandles } from "@wiggler/lib/candles/sources/coinbase";
 import type { CandleFetcher } from "@wiggler/lib/candles/types";
@@ -15,5 +14,4 @@ export const FETCHERS: Readonly<Record<CandleSource, CandleFetcher>> = {
   coinbase: fetchCoinbaseCandles,
   binance: fetchBinanceCandles,
   bitstamp: fetchBitstampCandles,
-  bitfinex: fetchBitfinexCandles,
 };
