@@ -3,6 +3,7 @@
 import { candlesBundleCommand } from "@wiggler/bin/candles/bundle";
 import { candlesCalibrationReportCommand } from "@wiggler/bin/candles/calibrationReport";
 import { candlesDistributionsCommand } from "@wiggler/bin/candles/distributions";
+import { candlesExperimentReportCommand } from "@wiggler/bin/candles/experimentReport";
 import { candlesLookaheadCommand } from "@wiggler/bin/candles/lookahead";
 import { candlesOpportunityReportCommand } from "@wiggler/bin/candles/opportunityReport";
 import { candlesStatusCommand } from "@wiggler/bin/candles/status";
@@ -33,6 +34,7 @@ export const wigglerCommands = [
   candlesOpportunityReportCommand,
   candlesTrainingDiagnosticsCommand,
   candlesBundleCommand,
+  candlesExperimentReportCommand,
 ] as const;
 
 export const wigglerCli = createCli({
