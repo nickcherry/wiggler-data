@@ -2,30 +2,60 @@ import type { CandleSource, Timeframe } from "@wiggler/constants/candles";
 import type { DatabaseClient } from "@wiggler/lib/db/types";
 
 /**
- * Returns the most recent `open_time_ms` we already have for the given
- * (source, symbol, timeframe), or `null` when nothing has been synced yet.
- * Used by the orchestrator to resume from where a previous sync left off
- * — re-running `candles:sync` is a no-op for already-fetched windows.
+ * Coverage statistics for a (source, symbol, timeframe) inside a specific
+ * `[fromMs, toMs]` window. `rowCount` is the number of candles we already
+ * have whose `open_time_ms` falls in that window — used to detect gaps
+ * left by an interrupted earlier sync. Returns `null` when nothing has
+ * been synced yet for the series.
  */
-export async function getLatestCandleOpenMs(
+export type CandleCoverage = Readonly<{
+  earliestMs: number;
+  latestMs: number;
+  rowCount: number;
+}>;
+
+/**
+ * Returns coverage stats inside `[fromMs, toMs]` for the given series, or
+ * `null` when there are no rows yet. Used by the orchestrator to decide
+ * whether to resume forward or to refetch.
+ *
+ * Crucial: it's not enough to look only at `min`/`max`. An interrupted
+ * earlier sync can leave the right `min` and `max` (the very first and
+ * very last candle managed to commit) while the middle is full of holes.
+ * Comparing `rowCount` against the expected count for the window is what
+ * catches that case.
+ */
+export async function getCandleCoverage(
   db: DatabaseClient,
   args: Readonly<{
     source: CandleSource;
     symbol: string;
     timeframe: Timeframe;
+    fromMs: number;
+    toMs: number;
   }>,
-): Promise<number | null> {
+): Promise<CandleCoverage | null> {
   const row = await db
     .selectFrom("candles")
-    .select((eb) => eb.fn.max("open_time_ms").as("latest"))
+    .select((eb) => [
+      eb.fn.min("open_time_ms").as("earliest"),
+      eb.fn.max("open_time_ms").as("latest"),
+      eb.fn.countAll<string>().as("rows"),
+    ])
     .where("source", "=", args.source)
     .where("symbol", "=", args.symbol)
     .where("timeframe", "=", args.timeframe)
+    .where("open_time_ms", ">=", args.fromMs.toString())
+    .where("open_time_ms", "<", args.toMs.toString())
     .executeTakeFirst();
-  if (!row || row.latest === null) {
+  if (!row || row.earliest === null || row.latest === null) {
     return null;
   }
-  return Number(row.latest);
+  return {
+    earliestMs: Number(row.earliest),
+    latestMs: Number(row.latest),
+    rowCount: Number(row.rows ?? 0),
+  };
 }
 
 export type CandleStatusRow = Readonly<{

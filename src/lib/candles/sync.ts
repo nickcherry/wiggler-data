@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { CandleSource, Timeframe } from "@wiggler/constants/candles";
 import { TIMEFRAME_MS } from "@wiggler/constants/candles";
-import { getLatestCandleOpenMs } from "@wiggler/lib/candles/queries";
+import { getCandleCoverage } from "@wiggler/lib/candles/queries";
 import {
   finishCandleSyncRun,
   startCandleSyncRun,
@@ -58,16 +58,46 @@ export async function syncCandleSeries(
 
   let resumeFromMs = args.fromMs;
   if (!args.forceFullRange) {
-    const latest = await getLatestCandleOpenMs(db, {
+    const coverage = await getCandleCoverage(db, {
       source: args.source,
       symbol: args.symbol,
       timeframe: args.timeframe,
+      fromMs: args.fromMs,
+      toMs: args.toMs,
     });
-    if (latest !== null) {
-      // Start one full interval after the last open we have so we never
-      // re-fetch the same row (the upsert would handle it, but it wastes
-      // a round trip).
-      resumeFromMs = Math.max(resumeFromMs, latest + intervalMs);
+    if (coverage !== null) {
+      // How many candles SHOULD be in the requested window if we have full
+      // contiguous coverage. The 0.95 threshold below tolerates legitimate
+      // small gaps (exchange downtime, holidays for some sources) without
+      // mistakenly claiming "complete" when an interrupted earlier sync
+      // left big holes in the middle.
+      const expectedRows = Math.max(
+        1,
+        Math.floor((args.toMs - args.fromMs) / intervalMs),
+      );
+      const olderEdgeCovered = coverage.earliestMs <= args.fromMs + intervalMs;
+      const noSignificantGaps = coverage.rowCount >= expectedRows * 0.95;
+
+      if (olderEdgeCovered && noSignificantGaps) {
+        // Coverage is complete enough — resume forward from one interval
+        // after the latest row we have so we skip re-fetching what we
+        // already know.
+        resumeFromMs = Math.max(resumeFromMs, coverage.latestMs + intervalMs);
+      } else {
+        // Either the older edge isn't covered, or the row count is too
+        // low for the window (= gaps in the middle). Refetch the full
+        // requested range; the upsert PK makes the overlap with the
+        // existing data a cheap no-op.
+        log.info("candles backfilling — coverage incomplete", {
+          earliestMs: coverage.earliestMs,
+          latestMs: coverage.latestMs,
+          rowCount: coverage.rowCount,
+          expectedRows,
+          olderEdgeCovered,
+          noSignificantGaps,
+          requestedFromMs: args.fromMs,
+        });
+      }
     }
   }
 

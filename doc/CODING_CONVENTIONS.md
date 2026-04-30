@@ -29,7 +29,7 @@
 - For exported-function files, use camelCase filenames that match the exported symbol.
 - Keep imports static and at the top of the file. Do not use dynamic `import()`.
 - Prefer absolute internal imports via `@wiggler/*` instead of deep relative paths.
-- Group code by domain (`polymarket/`, `prices/`, `collector/`, `audit/`) rather than by layer.
+- Group code by domain (`candles/`, `db/`, `cli/`) rather than by layer.
 
 ## Function And API Design
 
@@ -82,7 +82,7 @@
 - Keep boundary code isolated. Validation, parsing, formatting, and IO should not be spread through unrelated business logic.
 - Avoid hidden coupling between CLI code and reusable library code.
 - Keep logs high signal and error messages actionable.
-- For long-running collectors, prefer periodic heartbeat updates (`collector_heartbeats`) over per-event log spam.
+- For long-running syncs, prefer periodic progress logs (e.g. one per ~10K rows upserted) over per-row log spam.
 - Access environment variables through `src/constants/env.ts` so external dependencies stay discoverable in one place. ESLint blocks direct `process.env` reads outside that file.
 
 ## CLI Conventions

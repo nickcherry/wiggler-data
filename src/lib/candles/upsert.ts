@@ -3,14 +3,27 @@ import type { DatabaseClient } from "@wiggler/lib/db/types";
 import { sql } from "kysely";
 
 /**
+ * Maximum rows per single INSERT. Each row binds 12 parameters; the
+ * Postgres wire protocol caps a single statement at 65535 bind parameters.
+ * 2500 rows × 12 = 30000 — comfortably under, with margin for any future
+ * column additions before we need to revisit this.
+ *
+ * Bitfinex's `/v2/candles/...` endpoint returns up to 10000 rows per
+ * request, so the fetcher's natural batch size is well above this cap.
+ * Without chunking, the upsert fails with "bind message has N parameter
+ * formats but 0 parameters" the first time a real backfill runs.
+ */
+const UPSERT_CHUNK_SIZE = 2_500;
+
+/**
  * Idempotently upserts a batch of candles. The PK is
  * `(source, symbol, timeframe, open_time)`, so re-running a sync over an
  * already-fetched window updates each row's OHLCV in place rather than
  * inserting duplicates. `fetched_at` is refreshed on every upsert so
  * `candles:status` can show the most recent sync time per series.
  *
- * Returns the number of rows upserted (the count includes both inserts
- * and updates — Postgres doesn't distinguish in `RETURNING`).
+ * Splits the input into `UPSERT_CHUNK_SIZE`-row INSERTs to stay under
+ * Postgres's 65535-bind-parameter cap. Returns the total count.
  */
 export async function upsertCandles(
   db: DatabaseClient,
@@ -19,7 +32,19 @@ export async function upsertCandles(
   if (candles.length === 0) {
     return 0;
   }
-  const rows = candles.map((c) => ({
+  let total = 0;
+  for (let i = 0; i < candles.length; i += UPSERT_CHUNK_SIZE) {
+    const chunk = candles.slice(i, i + UPSERT_CHUNK_SIZE);
+    total += await upsertChunk(db, chunk);
+  }
+  return total;
+}
+
+async function upsertChunk(
+  db: DatabaseClient,
+  chunk: readonly Candle[],
+): Promise<number> {
+  const rows = chunk.map((c) => ({
     source: c.source,
     symbol: c.symbol,
     exchange_pair: c.exchangePair,

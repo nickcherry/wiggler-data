@@ -41,8 +41,8 @@
 - Reproduce the issue or confirm the failure mode before making broad fixes.
 - For bug fixes, verify the bug exists first, make the change, then verify the bug is actually gone.
 - Validate assumptions with code, logs, command output, or documentation instead of guessing.
-- Narrow the problem first. Identify whether the issue is parsing, command dispatch, validation, formatting, WS reconnection, or DB write before changing multiple layers.
-- Raw events in `polymarket_ws_events` and raw JSON in `price_ticks.raw` are the source of truth for parser bugs. Re-derive normalized rows from them when in doubt.
+- Narrow the problem first. Identify whether the issue is parsing, REST request shape, pagination cursor, rate limiting, or DB write before changing multiple layers.
+- `candle_sync_runs` records every `candles:sync` invocation per (source, symbol, timeframe) with status, rows upserted, and error message. Use it as the audit trail when a sync looks suspicious.
 
 ## Execution Discipline
 
