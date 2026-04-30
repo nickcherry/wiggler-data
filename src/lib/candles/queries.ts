@@ -1,4 +1,6 @@
 import type { CandleSource, Timeframe } from "@wiggler/constants/candles";
+import type { LookaheadSource } from "@wiggler/lib/candles/lookahead";
+import type { ClosePoint } from "@wiggler/lib/candles/winProbGrid";
 import type { DatabaseClient } from "@wiggler/lib/db/types";
 
 /**
@@ -66,6 +68,48 @@ export type CandleStatusRow = Readonly<{
   earliestMs: number | null;
   latestMs: number | null;
 }>;
+
+/**
+ * Loads ascending close-price points for a `(source, symbol, timeframe)`
+ * series. Used by `candles:win-prob-grid` as the input to the
+ * decision-state generator. The synthetic `vwap` source reads from
+ * `candle_vwap`; everything else reads from `candles`.
+ */
+export async function loadClosePoints(
+  db: DatabaseClient,
+  args: Readonly<{
+    source: LookaheadSource;
+    symbol: string;
+    timeframe: Timeframe;
+  }>,
+): Promise<readonly ClosePoint[]> {
+  if (args.source === "vwap") {
+    const rows = await db
+      .selectFrom("candle_vwap")
+      .select(["open_time_ms", "vwap_e8"])
+      .where("symbol", "=", args.symbol)
+      .where("timeframe", "=", args.timeframe)
+      .orderBy("open_time_ms", "asc")
+      .execute();
+    return rows.map((r) => ({
+      tsMs: Number(r.open_time_ms),
+      closeE8: BigInt(r.vwap_e8),
+    }));
+  }
+  const source: CandleSource = args.source;
+  const rows = await db
+    .selectFrom("candles")
+    .select(["open_time_ms", "close_e8"])
+    .where("source", "=", source)
+    .where("symbol", "=", args.symbol)
+    .where("timeframe", "=", args.timeframe)
+    .orderBy("open_time_ms", "asc")
+    .execute();
+  return rows.map((r) => ({
+    tsMs: Number(r.open_time_ms),
+    closeE8: BigInt(r.close_e8),
+  }));
+}
 
 /**
  * Per-(source, symbol, timeframe) coverage summary used by `candles:status`.

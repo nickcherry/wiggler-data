@@ -34,6 +34,18 @@ The CLI is the operator-facing contract for wiggler.
     `(source, symbol, timeframe)` combinations. Idempotent. Resumes from
     the last open_time on disk unless `--force-full-range`.
   - `candles:status` — coverage report per `(source, symbol, timeframe)`.
+  - `candles:vwap` — cross-source VWAP rows from `candles`.
+  - `candles:lookahead` — forward-looking label rows for every
+    `(source, symbol, timeframe)` and lookahead horizon.
+  - `candles:distributions` — percentile-distribution tables per
+    `(source, lookahead)` of every lookahead metric.
+  - `candles:win-prob-grid` — calibrated `wiggler-prob-grid-v1` JSON
+    config (the deliverable wiggler reads at runtime). See
+    [PROBABILITY_GRID.md](./PROBABILITY_GRID.md).
+  - `candles:calibration-report` — predicted-vs-realized win rate by
+    `p_win_lower` decile against the cached config.
+  - `candles:opportunity-report` — count of decision states crossing
+    each confidence threshold; per-day rate.
 
 ## Command Shape
 

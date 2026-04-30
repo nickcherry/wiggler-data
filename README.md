@@ -12,6 +12,7 @@ last open_time on disk.
 - ⌨️ [CLI](./doc/CLI.md)
 - 🐘 [Database](./doc/DATABASE.md)
 - 📊 [Candles](./doc/CANDLES.md): per-source REST shapes, pagination, rate limits.
+- 🎯 [Probability grid](./doc/PROBABILITY_GRID.md): the wiggler-prob-grid-v1 config wiggler consumes.
 - 📚 [Documentation conventions](./doc/DOCUMENTATION.md)
 - ✅ [Execution](./doc/EXECUTION.md)
 - 🧰 [Stack](./doc/STACK.md)
@@ -31,15 +32,35 @@ Every supported CEX REST endpoint is public — no API keys required.
 
 ## Pipeline
 
-The full data flow is four stages. Each is idempotent — re-running over
-a window that's already been processed is a cheap no-op.
+The full data flow is five stages. The first four are idempotent
+ingestion / labeling; the fifth produces the `wiggler-prob-grid-v1`
+JSON config that wiggler reads at runtime.
 
 ```
 candles:sync  →  candles:vwap  →  candles:lookahead  →  candles:distributions
   (raw OHLCV       (cross-source    (forward-looking      (percentile summaries
-   per source)      VWAP per          labels per           per source × lookahead)
-                    minute)           candle, 1m..5m)
+   per source)      VWAP per          labels per           per source × lookahead;
+                    minute)           candle, 1m..5m)      sanity-check tables)
+
+                                                          ↓
+
+                                                 candles:win-prob-grid
+                                                 (calibrated probability
+                                                 grid → JSON config artifact
+                                                 wiggler consumes)
+
+                                  +  candles:calibration-report   (predicted vs realized)
+                                  +  candles:opportunity-report   (signal counts per day)
 ```
+
+The first four stages are **research / sanity tables**: they give you
+unconditional movement distributions to eyeball before you trust
+anything trading. The fifth is the **deliverable**: a calibrated
+`P(current_side_wins | abs_d_bps, remaining_sec, vol_bin)` grid plus
+risk and fee config, dumped to `tmp/win-prob-grid/`.
+
+See [doc/PROBABILITY_GRID.md](./doc/PROBABILITY_GRID.md) for the full
+config schema and the math behind it.
 
 ## Common commands
 
@@ -62,6 +83,16 @@ bun wiggler candles:lookahead
 #    computes and caches per-metric JSON files under `tmp/distributions/`,
 #    subsequent runs are sub-second
 bun wiggler candles:distributions
+
+# 5. Compute the calibrated win-probability grid — emits the
+#    `wiggler-prob-grid-v1` JSON config under `tmp/win-prob-grid/`
+bun wiggler candles:win-prob-grid
+
+# 5b. Sanity-check the grid against itself: predicted vs realized
+bun wiggler candles:calibration-report
+
+# 5c. How many high-confidence signals would the model produce per day?
+bun wiggler candles:opportunity-report
 
 # Coverage report — rows / earliest / latest per (source, symbol, timeframe)
 bun wiggler candles:status
@@ -88,6 +119,14 @@ bun wiggler candles:distributions --no-cache
 
 # Distributions: machine-readable JSON
 bun wiggler candles:distributions --json
+
+# Win-prob grid: validation against true 5-minute market boundaries
+# (rolling sample size is bigger but real markets only start at fixed
+# boundaries; trust the boundary pass when the two disagree)
+bun wiggler candles:win-prob-grid --anchor-step-min 5
+
+# Win-prob grid: emit full config to stdout (e.g. for piping into wiggler)
+bun wiggler candles:win-prob-grid --json
 ```
 
 ## Environment variables

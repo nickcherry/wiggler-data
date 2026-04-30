@@ -1,10 +1,13 @@
 #!/usr/bin/env bun
 
+import { candlesCalibrationReportCommand } from "@wiggler/bin/candles/calibrationReport";
 import { candlesDistributionsCommand } from "@wiggler/bin/candles/distributions";
 import { candlesLookaheadCommand } from "@wiggler/bin/candles/lookahead";
+import { candlesOpportunityReportCommand } from "@wiggler/bin/candles/opportunityReport";
 import { candlesStatusCommand } from "@wiggler/bin/candles/status";
 import { candlesSyncCommand } from "@wiggler/bin/candles/sync";
 import { candlesVwapCommand } from "@wiggler/bin/candles/vwap";
+import { candlesWinProbGridCommand } from "@wiggler/bin/candles/winProbGrid";
 import { dbMigrateCommand } from "@wiggler/bin/db/migrate";
 import { dbResetCommand } from "@wiggler/bin/db/reset";
 import { dbRollbackCommand } from "@wiggler/bin/db/rollback";
@@ -23,6 +26,9 @@ export const wigglerCommands = [
   candlesVwapCommand,
   candlesLookaheadCommand,
   candlesDistributionsCommand,
+  candlesWinProbGridCommand,
+  candlesCalibrationReportCommand,
+  candlesOpportunityReportCommand,
 ] as const;
 
 export const wigglerCli = createCli({
