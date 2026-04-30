@@ -89,10 +89,38 @@ export interface CandleVwapTable {
   readonly computed_at: DefaultedDatabaseTimestamp;
 }
 
+/**
+ * Forward-looking labels / features for one
+ * `(source, symbol, timeframe, open_time, lookahead_min)`. `source`
+ * accepts the four CEX source names plus the synthetic `'vwap'` value
+ * for cross-source-aggregate-based labels. All bps metrics are signed
+ * — `max_up_move_bps` and `max_down_move_bps` can be negative when the
+ * window stayed strictly below or above the start price.
+ */
+export interface CandleLookaheadFeaturesTable {
+  readonly source: string;
+  readonly symbol: string;
+  readonly timeframe: string;
+  readonly open_time: DatabaseTimestamp;
+  readonly open_time_ms: DatabaseBigint;
+  readonly lookahead_min: number;
+  readonly start_price_e8: DatabaseBigint;
+  readonly future_high_e8: DatabaseBigint;
+  readonly future_low_e8: DatabaseBigint;
+  readonly end_price_e8: DatabaseBigint;
+  readonly max_up_move_bps: number;
+  readonly max_down_move_bps: number;
+  readonly max_abs_excursion_bps: number;
+  readonly close_to_close_abs_return_bps: number;
+  readonly range_bps: number;
+  readonly computed_at: DefaultedDatabaseTimestamp;
+}
+
 export interface Database {
   readonly candles: CandlesTable;
   readonly candle_sync_runs: CandleSyncRunsTable;
   readonly candle_vwap: CandleVwapTable;
+  readonly candle_lookahead_features: CandleLookaheadFeaturesTable;
 }
 
 export type DatabaseClient = Kysely<Database>;
