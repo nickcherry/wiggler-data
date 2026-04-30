@@ -116,30 +116,116 @@ export type LookaheadDistribution = Readonly<{
  * grouping is fast (one sort per group), so this stays well under a
  * second even on the full 12.7M-row table.
  *
- * Input filters are intersected: if `sources` or `metrics` is omitted,
- * all available values are used.
+ * Always returns rows for every source — the source filter (if any)
+ * is applied client-side. This keeps the cache layer's "one file per
+ * metric, all sources stored" invariant simple to reason about: the
+ * raw aggregate result is invariant on the source-filter axis, so a
+ * file written by one request is reusable by any other request that
+ * targets the same `(symbol, timeframe, metric)`.
  */
 export async function summarizeLookaheadDistributions(
   db: DatabaseClient,
   args: Readonly<{
     symbol: string;
     timeframe: Timeframe;
-    sources?: readonly LookaheadSource[];
     metrics?: readonly LookaheadMetric[];
   }>,
 ): Promise<readonly LookaheadDistribution[]> {
   const metrics = args.metrics ?? LOOKAHEAD_METRICS;
   const out: LookaheadDistribution[] = [];
   for (const metric of metrics) {
-    const rows = await aggregateMetric(db, {
+    const rows = await summarizeOneMetric(db, {
       symbol: args.symbol,
       timeframe: args.timeframe,
-      sources: args.sources,
       metric,
     });
     out.push({ metric, rows });
   }
   return out;
+}
+
+/**
+ * Computes one metric's distribution rows for every source in one
+ * `PERCENTILE_CONT` SQL pass. Used both by `summarizeLookaheadDistributions`
+ * and by the per-metric cache layer (which stores the result of this
+ * function verbatim and slices by source on read).
+ */
+export async function summarizeOneMetric(
+  db: DatabaseClient,
+  args: Readonly<{
+    symbol: string;
+    timeframe: Timeframe;
+    metric: LookaheadMetric;
+  }>,
+): Promise<readonly LookaheadStatsRow[]> {
+  // The metric column name comes from a const-typed enum, so it cannot
+  // come from untrusted input — but we still pin it through the
+  // `LOOKAHEAD_METRICS` allowlist before composing the SQL below so the
+  // boundary is explicit (and so an accidental future change can't slip
+  // a non-allowlisted column reference past us).
+  if (!LOOKAHEAD_METRICS.includes(args.metric)) {
+    throw new Error(`unsupported metric: ${args.metric}`);
+  }
+  const metricColumn = sql.ref(args.metric);
+
+  const result = await sql<AggregateRow>`
+    SELECT
+      source,
+      lookahead_min,
+      COUNT(*)::bigint                                                      AS cnt,
+      ROUND(AVG(${metricColumn}))                                           AS mean,
+      PERCENTILE_CONT(0.500) WITHIN GROUP (ORDER BY ${metricColumn})        AS p50,
+      PERCENTILE_CONT(0.750) WITHIN GROUP (ORDER BY ${metricColumn})        AS p75,
+      PERCENTILE_CONT(0.800) WITHIN GROUP (ORDER BY ${metricColumn})        AS p80,
+      PERCENTILE_CONT(0.900) WITHIN GROUP (ORDER BY ${metricColumn})        AS p90,
+      PERCENTILE_CONT(0.950) WITHIN GROUP (ORDER BY ${metricColumn})        AS p95,
+      PERCENTILE_CONT(0.975) WITHIN GROUP (ORDER BY ${metricColumn})        AS p97_5,
+      PERCENTILE_CONT(0.990) WITHIN GROUP (ORDER BY ${metricColumn})        AS p99,
+      PERCENTILE_CONT(0.995) WITHIN GROUP (ORDER BY ${metricColumn})        AS p99_5,
+      MAX(${metricColumn})::int                                             AS max_v
+    FROM candle_lookahead_features
+    WHERE symbol = ${args.symbol}
+      AND timeframe = ${args.timeframe}
+    GROUP BY source, lookahead_min
+    ORDER BY source, lookahead_min
+  `.execute(db);
+
+  return result.rows.map((row) => ({
+    source: row.source as LookaheadSource,
+    lookaheadMin: row.lookahead_min,
+    count: Number(row.cnt),
+    mean: Math.round(Number(row.mean)),
+    p50: Math.round(Number(row.p50)),
+    p75: Math.round(Number(row.p75)),
+    p80: Math.round(Number(row.p80)),
+    p90: Math.round(Number(row.p90)),
+    p95: Math.round(Number(row.p95)),
+    p97_5: Math.round(Number(row.p97_5)),
+    p99: Math.round(Number(row.p99)),
+    p99_5: Math.round(Number(row.p99_5)),
+    max: row.max_v,
+  }));
+}
+
+/**
+ * Slices a metric's stats rows down to a requested set of sources.
+ * Order of sources in the result matches `sources` (not the SQL order).
+ */
+export function filterStatsRowsBySources(
+  rows: readonly LookaheadStatsRow[],
+  sources: readonly LookaheadSource[],
+): readonly LookaheadStatsRow[] {
+  const sourceOrder = new Map(sources.map((s, i) => [s, i] as const));
+  return rows
+    .filter((row) => sourceOrder.has(row.source))
+    .sort((a, b) => {
+      const sa = sourceOrder.get(a.source) ?? 0;
+      const sb = sourceOrder.get(b.source) ?? 0;
+      if (sa !== sb) {
+        return sa - sb;
+      }
+      return a.lookaheadMin - b.lookaheadMin;
+    });
 }
 
 /**
@@ -162,69 +248,3 @@ type AggregateRow = Readonly<{
   p99_5: string;
   max_v: number;
 }>;
-
-async function aggregateMetric(
-  db: DatabaseClient,
-  args: Readonly<{
-    symbol: string;
-    timeframe: Timeframe;
-    sources?: readonly LookaheadSource[];
-    metric: LookaheadMetric;
-  }>,
-): Promise<readonly LookaheadStatsRow[]> {
-  // The metric column name comes from a const-typed enum, so it cannot
-  // come from untrusted input — but we still pin it through the
-  // `LOOKAHEAD_METRICS` allowlist before composing the SQL below so the
-  // boundary is explicit (and so an accidental future change can't slip
-  // a non-allowlisted column reference past us).
-  if (!LOOKAHEAD_METRICS.includes(args.metric)) {
-    throw new Error(`unsupported metric: ${args.metric}`);
-  }
-  const metricColumn = sql.ref(args.metric);
-
-  // `sources` filter is optional — when omitted, return every source we
-  // have lookahead data for.
-  const sourcesFilter =
-    args.sources && args.sources.length > 0
-      ? sql`AND source IN (${sql.join(args.sources.map((s) => sql.lit(s)))})`
-      : sql``;
-
-  const result = await sql<AggregateRow>`
-    SELECT
-      source,
-      lookahead_min,
-      COUNT(*)::bigint                                                      AS cnt,
-      ROUND(AVG(${metricColumn}))                                           AS mean,
-      PERCENTILE_CONT(0.500) WITHIN GROUP (ORDER BY ${metricColumn})        AS p50,
-      PERCENTILE_CONT(0.750) WITHIN GROUP (ORDER BY ${metricColumn})        AS p75,
-      PERCENTILE_CONT(0.800) WITHIN GROUP (ORDER BY ${metricColumn})        AS p80,
-      PERCENTILE_CONT(0.900) WITHIN GROUP (ORDER BY ${metricColumn})        AS p90,
-      PERCENTILE_CONT(0.950) WITHIN GROUP (ORDER BY ${metricColumn})        AS p95,
-      PERCENTILE_CONT(0.975) WITHIN GROUP (ORDER BY ${metricColumn})        AS p97_5,
-      PERCENTILE_CONT(0.990) WITHIN GROUP (ORDER BY ${metricColumn})        AS p99,
-      PERCENTILE_CONT(0.995) WITHIN GROUP (ORDER BY ${metricColumn})        AS p99_5,
-      MAX(${metricColumn})::int                                             AS max_v
-    FROM candle_lookahead_features
-    WHERE symbol = ${args.symbol}
-      AND timeframe = ${args.timeframe}
-      ${sourcesFilter}
-    GROUP BY source, lookahead_min
-    ORDER BY source, lookahead_min
-  `.execute(db);
-
-  return result.rows.map((row) => ({
-    source: row.source as LookaheadSource,
-    lookaheadMin: row.lookahead_min,
-    count: Number(row.cnt),
-    mean: Math.round(Number(row.mean)),
-    p50: Math.round(Number(row.p50)),
-    p75: Math.round(Number(row.p75)),
-    p80: Math.round(Number(row.p80)),
-    p90: Math.round(Number(row.p90)),
-    p95: Math.round(Number(row.p95)),
-    p97_5: Math.round(Number(row.p97_5)),
-    p99: Math.round(Number(row.p99)),
-    p99_5: Math.round(Number(row.p99_5)),
-    max: row.max_v,
-  }));
-}

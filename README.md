@@ -1,4 +1,4 @@
-# Wiggler
+# wiggler-data
 
 Bun + TypeScript ingestion for historical OHLCV candles across four public
 CEX REST endpoints (Coinbase, Binance.US, Bitstamp, Bitfinex).

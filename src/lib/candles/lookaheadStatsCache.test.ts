@@ -5,76 +5,55 @@ import { join } from "node:path";
 import {
   fingerprintsMatch,
   type LookaheadFingerprint,
+  type LookaheadStatsRow,
 } from "@wiggler/lib/candles/lookaheadStats";
 import {
-  distributionsCachePath,
-  readDistributionsCache,
-  writeDistributionsCache,
+  type MetricCacheFile,
+  metricCachePath,
+  readMetricCache,
+  writeMetricCache,
 } from "@wiggler/lib/candles/lookaheadStatsCache";
 import { describe, expect, test } from "bun:test";
 
-describe("distributionsCachePath", () => {
-  test("collapses different orderings of the same set to one path", () => {
-    // The user can pass `coinbase,vwap` or `vwap,coinbase` and get the
-    // same result; the cache must not duplicate work for the same
-    // logical request.
-    const a = distributionsCachePath({
+describe("metricCachePath", () => {
+  test("nests files by symbol+timeframe directory and uses metric as filename", () => {
+    const path = metricCachePath({
       symbol: "BTC",
       timeframe: "1m",
-      sources: ["coinbase", "vwap"],
-      metrics: ["range_bps", "max_abs_excursion_bps"],
+      metric: "max_abs_excursion_bps",
+      cacheDir: "tmp/distributions",
     });
-    const b = distributionsCachePath({
-      symbol: "BTC",
-      timeframe: "1m",
-      sources: ["vwap", "coinbase"],
-      metrics: ["max_abs_excursion_bps", "range_bps"],
-    });
-    expect(a).toBe(b);
+    expect(path).toBe(
+      "tmp/distributions/BTC_1m/max_abs_excursion_bps.json",
+    );
   });
 
-  test("different symbol → different path", () => {
-    const a = distributionsCachePath({
+  test("different metric → different file (so each metric invalidates independently)", () => {
+    const a = metricCachePath({
       symbol: "BTC",
       timeframe: "1m",
-      sources: ["coinbase"],
-      metrics: ["range_bps"],
+      metric: "range_bps",
     });
-    const b = distributionsCachePath({
-      symbol: "ETH",
+    const b = metricCachePath({
+      symbol: "BTC",
       timeframe: "1m",
-      sources: ["coinbase"],
-      metrics: ["range_bps"],
+      metric: "max_up_move_bps",
     });
     expect(a).not.toBe(b);
   });
 
-  test("different sources → different path", () => {
-    const a = distributionsCachePath({
+  test("source filter does NOT affect the path — same metric reuses the cache regardless of which sources the user filters to", () => {
+    // The whole point of per-metric caching with client-side source
+    // filtering: the same file backs both `--sources coinbase` and
+    // `--sources binance` requests for the same metric.
+    const path = metricCachePath({
       symbol: "BTC",
       timeframe: "1m",
-      sources: ["coinbase"],
-      metrics: ["range_bps"],
+      metric: "range_bps",
     });
-    const b = distributionsCachePath({
-      symbol: "BTC",
-      timeframe: "1m",
-      sources: ["binance"],
-      metrics: ["range_bps"],
-    });
-    expect(a).not.toBe(b);
-  });
-
-  test("filename includes symbol and timeframe up front for human scanning", () => {
-    const path = distributionsCachePath({
-      symbol: "BTC",
-      timeframe: "5m",
-      sources: ["coinbase"],
-      metrics: ["range_bps"],
-    });
-    const filename = path.split("/").pop() ?? "";
-    expect(filename.startsWith("BTC_5m_")).toBe(true);
-    expect(filename.endsWith(".json")).toBe(true);
+    expect(path.endsWith("range_bps.json")).toBe(true);
+    expect(path.includes("coinbase")).toBe(false);
+    expect(path.includes("binance")).toBe(false);
   });
 });
 
@@ -104,60 +83,76 @@ describe("fingerprintsMatch", () => {
   });
 });
 
-describe("read/write distributions cache", () => {
-  test("round-trips a cache file", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "wiggler-cache-test-"));
-    const path = join(dir, "BTC_1m_test.json");
-    const original = {
-      version: 1 as const,
+describe("read/write metric cache", () => {
+  function makeFile(): MetricCacheFile {
+    const rows: LookaheadStatsRow[] = [
+      {
+        source: "coinbase",
+        lookaheadMin: 1,
+        count: 525_132,
+        mean: 7,
+        p50: 5,
+        p75: 8,
+        p80: 10,
+        p90: 13,
+        p95: 18,
+        p97_5: 23,
+        p99: 30,
+        p99_5: 37,
+        max: 382,
+      },
+      {
+        source: "binance",
+        lookaheadMin: 1,
+        count: 525_607,
+        mean: 2,
+        p50: 0,
+        p75: 0,
+        p80: 0,
+        p90: 6,
+        p95: 15,
+        p97_5: 27,
+        p99: 38,
+        p99_5: 45,
+        max: 275,
+      },
+    ];
+    return {
+      version: 2,
       fingerprint: { rowCount: 12_731_107, latestOpenTimeMs: 1_777_542_120_000 },
       computedAtIso: "2026-04-30T10:30:00.000Z",
-      request: {
-        symbol: "BTC",
-        timeframe: "1m",
-        sources: ["coinbase", "vwap"] as const,
-        metrics: ["range_bps"] as const,
-      },
-      distributions: [
-        {
-          metric: "range_bps" as const,
-          rows: [
-            {
-              source: "coinbase" as const,
-              lookaheadMin: 1,
-              count: 525_132,
-              mean: 7,
-              p50: 5,
-              p75: 8,
-              p80: 10,
-              p90: 13,
-              p95: 18,
-              p97_5: 23,
-              p99: 30,
-              p99_5: 37,
-              max: 382,
-            },
-          ],
-        },
-      ],
+      symbol: "BTC",
+      timeframe: "1m",
+      metric: "range_bps",
+      rows,
     };
-    await writeDistributionsCache(path, original);
-    const loaded = await readDistributionsCache(path);
+  }
+
+  test("round-trips a metric cache file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wiggler-cache-test-"));
+    const path = join(dir, "range_bps.json");
+    const original = makeFile();
+    await writeMetricCache(path, original);
+    const loaded = await readMetricCache(path, original.fingerprint);
     expect(loaded).not.toBeNull();
-    expect(loaded?.fingerprint).toEqual(original.fingerprint);
-    expect(loaded?.distributions).toEqual(original.distributions);
+    expect(loaded?.metric).toBe("range_bps");
+    expect(loaded?.rows).toEqual(original.rows);
   });
 
   test("missing file → null (cache miss is not an error)", async () => {
     const path = join(tmpdir(), `wiggler-cache-test-missing-${Date.now()}.json`);
-    expect(await readDistributionsCache(path)).toBeNull();
+    expect(
+      await readMetricCache(path, { rowCount: 0, latestOpenTimeMs: null }),
+    ).toBeNull();
   });
 
   test("malformed JSON → null", async () => {
     const dir = mkdtempSync(join(tmpdir(), "wiggler-cache-test-"));
     const path = join(dir, "broken.json");
     await Bun.write(path, "{not valid json");
-    expect(await readDistributionsCache(path)).toBeNull();
+    expect(
+      await readMetricCache(path, { rowCount: 0, latestOpenTimeMs: null }),
+    ).toBeNull();
   });
 
   test("wrong version → null (forces recompute)", async () => {
@@ -166,13 +161,31 @@ describe("read/write distributions cache", () => {
     await Bun.write(
       path,
       JSON.stringify({
-        version: 99,
+        version: 1,
         fingerprint: { rowCount: 0, latestOpenTimeMs: null },
         computedAtIso: "2025-01-01T00:00:00.000Z",
-        request: { symbol: "BTC", timeframe: "1m", sources: [], metrics: [] },
-        distributions: [],
+        symbol: "BTC",
+        timeframe: "1m",
+        metric: "range_bps",
+        rows: [],
       }),
     );
-    expect(await readDistributionsCache(path)).toBeNull();
+    expect(
+      await readMetricCache(path, { rowCount: 0, latestOpenTimeMs: null }),
+    ).toBeNull();
+  });
+
+  test("fingerprint mismatch → null (cache invalidates when underlying data moves)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wiggler-cache-test-"));
+    const path = join(dir, "fingerprint-mismatch.json");
+    const original = makeFile();
+    await writeMetricCache(path, original);
+
+    // Same file, but the live DB now reports a different fingerprint.
+    const loaded = await readMetricCache(path, {
+      rowCount: original.fingerprint.rowCount + 1, // one new row added
+      latestOpenTimeMs: original.fingerprint.latestOpenTimeMs,
+    });
+    expect(loaded).toBeNull();
   });
 });

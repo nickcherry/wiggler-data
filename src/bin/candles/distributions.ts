@@ -5,20 +5,17 @@ import {
   type LookaheadSource,
 } from "@wiggler/lib/candles/lookahead";
 import {
-  fingerprintsMatch,
   getLookaheadFingerprint,
   LOOKAHEAD_METRIC_DESCRIPTIONS,
   LOOKAHEAD_METRICS,
-  type LookaheadDistribution,
   type LookaheadFingerprint,
   type LookaheadMetric,
   type LookaheadStatsRow,
-  summarizeLookaheadDistributions,
 } from "@wiggler/lib/candles/lookaheadStats";
 import {
-  distributionsCachePath,
-  readDistributionsCache,
-  writeDistributionsCache,
+  loadDistributionsWithCache,
+  metricCachePath,
+  type MetricCacheStatus,
 } from "@wiggler/lib/candles/lookaheadStatsCache";
 import { defineCommand, defineFlagOption, defineValueOption } from "@wiggler/lib/cli";
 import { CliUsageError } from "@wiggler/lib/cli/parser";
@@ -29,25 +26,25 @@ import { z } from "zod";
 /**
  * Reports percentile distributions of lookahead-feature metrics from
  * `candle_lookahead_features`, grouped by `(source, lookahead_min)`.
- * One table per metric, each preceded by a one-line description.
+ * One table per metric, each preceded by a one-line description and a
+ * dim cache-state line.
  *
- * Computation: live `PERCENTILE_CONT` on the indexed table, with an
- * on-disk JSON cache keyed on `(symbol, timeframe, sources, metrics)`
- * and invalidated by a cheap `(rowCount, latestOpenTimeMs)` fingerprint
- * of `candle_lookahead_features`. Subsequent runs with the same
- * request shape and unchanged underlying data skip the SQL entirely.
+ * Caching is per-metric: each metric has its own JSON file at
+ * `tmp/distributions/{SYMBOL}_{TF}/{metric}.json`. Tweaking or adding
+ * one metric only invalidates that one file; changing `--sources`
+ * filters reuses the same cache files (filtering is client-side).
  *
  * Renders `vwap` as `aggregate` in human-readable mode, since users
  * conceptually think of it as "the cross-source aggregate" rather than
  * a raw exchange. Bolds metric titles + column headings and dims the
- * per-metric description line when stdout is a TTY (suppressed by
+ * description / cache-state lines when stdout is a TTY (suppressed by
  * `--no-color` or when piping into a file).
  */
 export const candlesDistributionsCommand = defineCommand({
   name: "candles:distributions",
   summary: "Print percentile distributions of lookahead features per (source, lookahead)",
   description:
-    "Reads `candle_lookahead_features` and prints a percentile-distribution table for each requested metric (max_abs_excursion_bps, close_to_close_abs_return_bps, range_bps, max_up_move_bps, max_down_move_bps), grouped by exchange and lookahead horizon. All values are basis points (1 bps = 0.01%). Run `bun wiggler candles:lookahead` first to populate the source table. Results are cached to `tmp/distributions/` and reused when the underlying data hasn't changed.",
+    "Reads `candle_lookahead_features` and prints a percentile-distribution table for each requested metric (max_abs_excursion_bps, close_to_close_abs_return_bps, range_bps, max_up_move_bps, max_down_move_bps), grouped by exchange and lookahead horizon. All values are basis points (1 bps = 0.01%). Run `bun wiggler candles:lookahead` first to populate the source table. Each metric is cached independently to `tmp/distributions/{SYMBOL}_{TF}/{metric}.json` and reused when the underlying data hasn't changed.",
   options: [
     defineValueOption({
       key: "symbol",
@@ -105,7 +102,7 @@ export const candlesDistributionsCommand = defineCommand({
   output:
     "Prints one percentile table per metric, with rows per (exchange, lookahead). Or JSON when --json is set.",
   sideEffects:
-    "Reads PostgreSQL. Reads/writes JSON cache files under `tmp/distributions/` unless --no-cache is set.",
+    "Reads PostgreSQL. Reads/writes per-metric JSON cache files under `tmp/distributions/{SYMBOL}_{TF}/` unless --no-cache is set.",
   async run({ io, options }) {
     const symbol = (options.symbol ?? env.defaultAsset).toUpperCase();
     const timeframe: Timeframe = options.timeframe;
@@ -129,44 +126,15 @@ export const candlesDistributionsCommand = defineCommand({
 
     const db = createDatabase();
     try {
-      const cachePath = distributionsCachePath({ symbol, timeframe, sources, metrics });
       const fingerprint = await getLookaheadFingerprint(db, { symbol, timeframe });
-
-      let distributions: readonly LookaheadDistribution[];
-      let cacheStatus: "hit" | "miss" | "skipped";
-      let cachedComputedAtIso: string | null = null;
-
-      if (options.noCache) {
-        distributions = await summarizeLookaheadDistributions(db, {
-          symbol,
-          timeframe,
-          sources,
-          metrics,
-        });
-        cacheStatus = "skipped";
-      } else {
-        const cached = await readDistributionsCache(cachePath);
-        if (cached !== null && fingerprintsMatch(cached.fingerprint, fingerprint)) {
-          distributions = cached.distributions;
-          cacheStatus = "hit";
-          cachedComputedAtIso = cached.computedAtIso;
-        } else {
-          distributions = await summarizeLookaheadDistributions(db, {
-            symbol,
-            timeframe,
-            sources,
-            metrics,
-          });
-          cacheStatus = "miss";
-          await writeDistributionsCache(cachePath, {
-            version: 1,
-            fingerprint,
-            computedAtIso: new Date().toISOString(),
-            request: { symbol, timeframe, sources, metrics },
-            distributions,
-          });
-        }
-      }
+      const { distributions, cacheStatus } = await loadDistributionsWithCache(db, {
+        symbol,
+        timeframe,
+        metrics,
+        sources,
+        fingerprint,
+        useCache: !options.noCache,
+      });
 
       if (options.json) {
         io.writeStdout(
@@ -176,10 +144,8 @@ export const candlesDistributionsCommand = defineCommand({
               timeframe,
               sources,
               metrics,
-              cacheStatus,
-              cacheComputedAtIso: cachedComputedAtIso,
-              cachePath,
               fingerprint,
+              cacheStatusByMetric: Object.fromEntries(cacheStatus),
               distributions,
             },
             null,
@@ -194,11 +160,9 @@ export const candlesDistributionsCommand = defineCommand({
           symbol,
           timeframe,
           distributions,
-          useColor,
           cacheStatus,
-          cachedComputedAtIso,
-          cachePath,
           fingerprint,
+          useColor,
         }),
       );
     } finally {
@@ -222,28 +186,30 @@ function dim(text: string, useColor: boolean): string {
 }
 
 /**
- * Renders the full human-readable report: a small preamble (symbol /
- * timeframe / units / cache state) followed by one section per metric,
- * each with a bolded title, a dimmed one-line description, a bolded
- * column header row, and rows grouped by exchange (separated by a
- * blank line for visual chunking).
+ * Renders the full human-readable report: a small preamble followed
+ * by one section per metric — bold title, dim description + cache
+ * state, bold column header, rows grouped by exchange (with a blank
+ * line between exchanges).
  */
 function formatHumanReport(args: {
   symbol: string;
   timeframe: Timeframe;
-  distributions: readonly LookaheadDistribution[];
-  useColor: boolean;
-  cacheStatus: "hit" | "miss" | "skipped";
-  cachedComputedAtIso: string | null;
-  cachePath: string;
+  distributions: ReturnType<typeof loadDistributionsWithCache> extends Promise<{
+    distributions: infer D;
+    cacheStatus: unknown;
+  }>
+    ? D
+    : never;
+  cacheStatus: ReadonlyMap<LookaheadMetric, MetricCacheStatus>;
   fingerprint: LookaheadFingerprint;
+  useColor: boolean;
 }): string {
   const lines: string[] = [];
   lines.push(`symbol:    ${args.symbol}`);
   lines.push(`timeframe: ${args.timeframe}`);
   lines.push("units:     basis points (1 bps = 0.01%)");
   lines.push(`rows:      ${args.fingerprint.rowCount.toLocaleString("en-US")}`);
-  lines.push(formatCacheLine(args, args.useColor));
+  lines.push(formatGlobalCacheLine(args.cacheStatus, args.useColor));
   lines.push("");
 
   if (args.distributions.length === 0) {
@@ -259,6 +225,15 @@ function formatHumanReport(args: {
         args.useColor,
       ),
     );
+    const status = args.cacheStatus.get(distribution.metric);
+    if (status !== undefined) {
+      lines.push(
+        dim(
+          `  ${formatPerMetricCacheLine(distribution.metric, status, args.symbol, args.timeframe)}`,
+          args.useColor,
+        ),
+      );
+    }
     lines.push("");
     if (distribution.rows.length === 0) {
       lines.push("  (no rows — run `bun wiggler candles:lookahead` first)");
@@ -272,27 +247,68 @@ function formatHumanReport(args: {
   return lines.join("\n");
 }
 
-function formatCacheLine(
-  args: {
-    cacheStatus: "hit" | "miss" | "skipped";
-    cachedComputedAtIso: string | null;
-    cachePath: string;
-  },
+/**
+ * Compact one-line summary of cache outcomes across all requested
+ * metrics: e.g. "cache: 4 hits, 1 miss" or "cache: bypassed (--no-cache)".
+ */
+function formatGlobalCacheLine(
+  status: ReadonlyMap<LookaheadMetric, MetricCacheStatus>,
   useColor: boolean,
 ): string {
-  switch (args.cacheStatus) {
+  let hits = 0;
+  let misses = 0;
+  let skipped = 0;
+  for (const value of status.values()) {
+    if (value.status === "hit") {
+      hits++;
+    } else if (value.status === "miss") {
+      misses++;
+    } else {
+      skipped++;
+    }
+  }
+  if (skipped > 0 && hits === 0 && misses === 0) {
+    return dim("cache:     bypassed (--no-cache)", useColor);
+  }
+  const parts: string[] = [];
+  if (hits > 0) {
+    parts.push(`${hits} ${plural("hit", hits)}`);
+  }
+  if (misses > 0) {
+    parts.push(`${misses} ${plural("miss", misses, "misses")}`);
+  }
+  if (skipped > 0) {
+    parts.push(`${skipped} skipped`);
+  }
+  return dim(`cache:     ${parts.join(", ")}`, useColor);
+}
+
+function plural(singular: string, n: number, pluralForm?: string): string {
+  if (n === 1) {
+    return singular;
+  }
+  return pluralForm ?? `${singular}s`;
+}
+
+/**
+ * Per-metric cache status line shown under each section heading.
+ * Includes the cache file path so the user can `cat` / `rm` it
+ * directly when iterating.
+ */
+function formatPerMetricCacheLine(
+  metric: LookaheadMetric,
+  status: MetricCacheStatus,
+  symbol: string,
+  timeframe: Timeframe,
+): string {
+  const path = metricCachePath({ symbol, timeframe, metric });
+  switch (status.status) {
     case "hit":
-      return dim(
-        `cache:     hit (${args.cachedComputedAtIso ?? "?"}, ${args.cachePath})`,
-        useColor,
-      );
+      return `cache hit (${status.computedAtIso}, ${path})`;
     case "miss":
-      return dim(
-        `cache:     miss → wrote ${args.cachePath}`,
-        useColor,
-      );
+      return `cache miss → recomputed and wrote ${path}`;
     case "skipped":
-      return dim("cache:     skipped (--no-cache)", useColor);
+      return "cache bypassed (--no-cache)";
   }
 }
 
