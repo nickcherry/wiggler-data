@@ -1,47 +1,21 @@
 # Wiggler
 
-Bun + TypeScript collector for Polymarket's recurring Up/Down 5-minute
-markets, plus parallel Coinbase + Binance asset-price ingestion. Storage is
-**snapshot-only**: WS frames are reduced to in-memory state, and the
-scheduler captures both the Polymarket book and the latest CEX prices to
-durable rows once per second on a single uniform cadence.
-
-> **This app does not trade. It only collects and audits data.**
+Bun + TypeScript ingestion for historical OHLCV candles across four public
+CEX REST endpoints (Coinbase, Binance.US, Bitstamp, Bitfinex).
+Idempotent at the row level: re-running `candles:sync` over an
+already-fetched window is a cheap no-op, and crashed runs resume from the
+last open_time on disk.
 
 ## Docs
 
-- 🧱 [Coding conventions](./doc/CODING_CONVENTIONS.md): structure, typing, testing, CLI, complexity rules.
-- ⌨️ [CLI](./doc/CLI.md): the single-entrypoint `bun wiggler` contract and active commands.
-- 🐘 [Database](./doc/DATABASE.md): persisted tables, snapshot model, migration rules.
-- 🟢 [Polymarket](./doc/POLYMARKET.md): Up/Down 5m market discovery, WS, book reconstruction.
-- 💱 [Prices](./doc/PRICES.md): CEX asset price snapshots.
-- 📈 [Analysis](./doc/ANALYSIS.md): per-window timelines and the `backtest:trigger` configuration sweep.
-- 🤝 [How to work with Nick](./doc/HOW_TO_WORK_WITH_NICK.md): collaboration expectations.
-
-## What it does
-
-- Discovers current/next/recent Up/Down 5m markets via Polymarket Gamma.
-- Subscribes to the Polymarket market WebSocket and reconstructs each
-  outcome's orderbook in memory.
-- Subscribes to seven public CEX WebSockets in parallel (Coinbase, Binance,
-  Gemini, Bybit, Bitstamp, Bitfinex, Kraken) and keeps the latest
-  mid/bid/ask per `(source, symbol)` in memory.
-- Once per `COLLECTOR_SNAPSHOT_INTERVAL_MS` (default 1s) writes one
-  `book_snapshots` + `book_levels` row per active (market, outcome) and one
-  `asset_price_snapshots` row per symbol. Both share the same
-  `captured_at_ms` for clean joins.
-- Audits the resulting data: snapshot freshness, complement-price sanity,
-  market-window coverage, per-source CEX freshness.
-
-## What it does NOT do
-
-- **No tick-level history.** Polymarket WS frames and CEX ticks are not
-  persisted; only the per-tick snapshots are.
-- **No trade prints.** Trades are reflected in the next book frame's
-  `last_trade_price` field but the discrete prints are not stored.
-- No trading, wallet auth, or order placement.
-- No strategy logic, ML, or backtesting.
-- No dashboard UI or notifications.
+- 🧱 [Coding conventions](./doc/CODING_CONVENTIONS.md)
+- ⌨️ [CLI](./doc/CLI.md)
+- 🐘 [Database](./doc/DATABASE.md)
+- 📊 [Candles](./doc/CANDLES.md): per-source REST shapes, pagination, rate limits.
+- 📚 [Documentation conventions](./doc/DOCUMENTATION.md)
+- ✅ [Execution](./doc/EXECUTION.md)
+- 🧰 [Stack](./doc/STACK.md)
+- 🤝 [How to work with Nick](./doc/HOW_TO_WORK_WITH_NICK.md)
 
 ## Setup
 
@@ -53,98 +27,65 @@ bun wiggler db:migrate
 bun wiggler doctor
 ```
 
-All seven CEX WebSockets are public and require no API keys. Bybit's
-public market data is reachable from US IPs even though Bybit's ToS
-restricts US users from the platform itself; if that's not acceptable,
-disable it by overriding `BYBIT_WS_URL` to an unreachable endpoint or
-removing it from the coordinator wiring.
+Every supported CEX REST endpoint is public — no API keys required.
 
 ## Common commands
 
 ```bash
-# Health
+# Health check (DB + every CEX REST endpoint reachable)
 bun wiggler doctor
-bun wiggler db:status
 
-# Discover markets
-bun wiggler market:current --asset BTC
-bun wiggler market:windows --asset BTC --around now
-bun wiggler market:by-slug btc-updown-5m-1777475700
-bun wiggler market:discover --asset BTC --lookahead 3 --lookback 3
+# Backfill up to 1 year of 1m candles for BTC across every supported source
+bun wiggler candles:sync
 
-# Run the collector (Ctrl+C to stop)
-bun wiggler collect:start --asset BTC
+# Only Coinbase + Binance, last 30 days
+bun wiggler candles:sync --sources coinbase,binance --since 30d
 
-# Polymarket only (no CEX price snapshots)
-bun wiggler collect:polymarket --asset BTC
+# Multiple symbols, custom timeframe
+bun wiggler candles:sync --symbols BTC,ETH --timeframe 1h
 
-# Audits
-bun wiggler audit:latest --asset BTC
-bun wiggler audit:market btc-updown-5m-1777475700
-bun wiggler audit:gaps --asset BTC --since 24h
-bun wiggler audit:book btc-updown-5m-1777475700
-bun wiggler audit:book btc-updown-5m-1777475700 --at 2026-04-29T15:17:30Z --depth 10
-bun wiggler audit:prices --asset BTC --since 1h
+# Force a full re-pull (ignores resume cursor; useful if you suspect
+# upstream revisions)
+bun wiggler candles:sync --force-full-range
 
-# Analysis
-bun wiggler analyze:window btc-updown-5m-1777475700
-bun wiggler backtest:trigger --side Up --min-pct-move 0.005 --max-seconds-left 60 --max-entry-price 0.85 --min-fill-size 100
-
-# Exports
-bun wiggler export:snapshots --market btc-updown-5m-1777475700 --out tmp/snapshots.ndjson
-
-# Tails
-bun wiggler tail:books  --asset BTC
-bun wiggler tail:prices --asset BTC
+# Coverage report
+bun wiggler candles:status
 ```
 
 ## Environment variables
 
-| name                              | required | default                                                | purpose                                  |
-| --------------------------------- | -------- | ------------------------------------------------------ | ---------------------------------------- |
-| `DATABASE_URL`                    | yes      | `postgres://localhost:5432/wiggler`                    | PostgreSQL connection                    |
-| `POLYMARKET_GAMMA_BASE_URL`       | no       | `https://gamma-api.polymarket.com`                     | Gamma REST                               |
-| `POLYMARKET_CLOB_BASE_URL`        | no       | `https://clob.polymarket.com`                          | CLOB REST (for future use)               |
-| `POLYMARKET_WS_URL`               | no       | `wss://ws-subscriptions-clob.polymarket.com/ws/market` | Polymarket market WS                     |
-| `DEFAULT_ASSET`                   | no       | `BTC`                                                  | Default asset symbol                     |
-| `PRICE_SYMBOLS`                   | no       | `BTC`                                                  | Comma-separated symbols snapshotted from CEX feeds |
-| `COINBASE_WS_URL`                 | no       | `wss://ws-feed.exchange.coinbase.com`                  | Coinbase Exchange WS                     |
-| `BINANCE_WS_URL`                  | no       | `wss://stream.binance.us:9443`                         | Binance Spot WS (binance.com is geo-blocked from the US) |
-| `GEMINI_WS_BASE_URL`              | no       | `wss://api.gemini.com/v1/marketdata`                   | Gemini v1 marketdata base (per-symbol path appended) |
-| `BYBIT_WS_URL`                    | no       | `wss://stream.bybit.com/v5/public/spot`                | Bybit v5 public spot WS                  |
-| `BITSTAMP_WS_URL`                 | no       | `wss://ws.bitstamp.net`                                | Bitstamp public WS                       |
-| `BITFINEX_WS_URL`                 | no       | `wss://api-pub.bitfinex.com/ws/2`                      | Bitfinex v2 public WS                    |
-| `KRAKEN_WS_URL`                   | no       | `wss://ws.kraken.com/v2`                               | Kraken v2 WS                             |
-| `COLLECTOR_SNAPSHOT_INTERVAL_MS`  | no       | `1000`                                                 | Uniform cadence for book + price snapshots |
-| `COLLECTOR_BOOK_DEPTH`            | no       | `20`                                                   | Top-N book levels persisted per snapshot |
-| `LOG_LEVEL`                       | no       | `info`                                                 | `debug`, `info`, `warn`, `error`         |
-| `DATABASE_POOL_MAX`               | no       | (pg default)                                           | Override pg pool max                     |
-
-## How to audit health
-
-After running `collect:start` for a few minutes:
-
-- `audit:latest` should report `Status: OK` (or `WARN` with a clear reason).
-- `audit:market <slug>` should show snapshot counts close to expected
-  (`floor(window_seconds) × 2` outcomes at 1s cadence).
-- `audit:gaps --since 1h` should show no missing markets.
-- `audit:prices --since 1h` should show fresh per-source midpoints with
-  staleness < ~3s and a sane price range.
+| name | default | purpose |
+|---|---|---|
+| `DATABASE_URL` | `postgres://localhost:5432/wiggler` | PostgreSQL connection |
+| `DEFAULT_ASSET` | `BTC` | Default asset symbol |
+| `DEFAULT_SYMBOLS` | `BTC` | Comma-separated symbols when `--symbols` is omitted |
+| `COINBASE_REST_BASE_URL` | `https://api.exchange.coinbase.com` | Coinbase Exchange |
+| `BINANCE_REST_BASE_URL` | `https://api.binance.us` | Binance.US (binance.com is geo-blocked from the US) |
+| `BITSTAMP_REST_BASE_URL` | `https://www.bitstamp.net` | Bitstamp |
+| `BITFINEX_REST_BASE_URL` | `https://api-pub.bitfinex.com` | Bitfinex |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `DATABASE_POOL_MAX` | (pg default) | Override pg pool max |
 
 ## Storage budget
 
-At the default 1s cadence with depth 20 and 1 asset (BTC), expect:
+1 year × 1-minute candles × 4 sources × 1 symbol ≈ 2.1M rows. Each row is
+~150 bytes including indexes, so a full BTC backfill is **~320 MB total**.
+Adding a second symbol roughly doubles it.
 
-- ~3.4 GB / day → ~50 GB / 14 days
-- `book_levels` is ~70% of that (~36 levels × ~92 B per snapshot)
-- `asset_price_snapshots` is < 1% of total
+## What this app intentionally does NOT do
 
-Lower the cadence (`COLLECTOR_SNAPSHOT_INTERVAL_MS=5000`) for ~5× less data.
+- No real-time WebSocket streaming. Historical candles only.
+- No order execution, wallet auth, or PnL modeling.
+- No Polymarket / prediction-market integration.
 
 ## Known limitations
 
-- Polymarket only currently runs Up/Down markets for BTC. Slug helpers and
-  market discovery are asset-agnostic, so adding ETH/SOL is a config change
-  once Polymarket lists them.
-- No backfilled rebuilds: if the collector restarts mid-window, snapshots
-  resume after the next `book` frame is received from Polymarket.
+- **Kraken, Gemini, and Bybit are not included.** Kraken/Gemini's public
+  OHLC endpoints only return the most recent ~12 hours / ~1 day of 1m
+  data, which is useless for a 1-year backfill. Bybit's CDN blocks US
+  IPs (HTTP 403) and there is no US fallback host. Add support if the
+  use case justifies it.
+- **No automatic deduplication across sources.** Each `(source, symbol,
+  timeframe, open_time)` is its own row. Differences across sources are
+  expected (separate liquidity pools, separate last-trade feeds) and the
+  consumer blends them as needed.

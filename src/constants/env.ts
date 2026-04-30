@@ -1,18 +1,9 @@
 const defaultDatabaseUrl = "postgres://localhost:5432/wiggler";
-const defaultGammaBaseUrl = "https://gamma-api.polymarket.com";
-const defaultClobBaseUrl = "https://clob.polymarket.com";
-const defaultPolymarketWsUrl = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
-const defaultCoinbaseWsUrl = "wss://ws-feed.exchange.coinbase.com";
-// Binance.com is geo-blocked from the US (HTTP 451 on the WS handshake).
-// Default to Binance.US, which serves identical bookTicker frames.
-const defaultBinanceWsUrl = "wss://stream.binance.us:9443";
-// Gemini v1 marketdata; per-symbol path. The query string requesting only
-// top-of-book change events is appended by the client at subscribe time.
-const defaultGeminiWsBaseUrl = "wss://api.gemini.com/v1/marketdata";
-const defaultBybitWsUrl = "wss://stream.bybit.com/v5/public/spot";
-const defaultBitstampWsUrl = "wss://ws.bitstamp.net";
-const defaultBitfinexWsUrl = "wss://api-pub.bitfinex.com/ws/2";
-const defaultKrakenWsUrl = "wss://ws.kraken.com/v2";
+const defaultCoinbaseRestBaseUrl = "https://api.exchange.coinbase.com";
+// Binance.com is geo-blocked from the US (HTTP 451). Default to Binance.US.
+const defaultBinanceRestBaseUrl = "https://api.binance.us";
+const defaultBitstampRestBaseUrl = "https://www.bitstamp.net";
+const defaultBitfinexRestBaseUrl = "https://api-pub.bitfinex.com";
 
 function parsePositiveInt(raw: string | undefined, label: string): number | undefined {
   if (raw === undefined || raw.trim() === "") {
@@ -25,7 +16,10 @@ function parsePositiveInt(raw: string | undefined, label: string): number | unde
   return value;
 }
 
-function parseSymbolList(raw: string | undefined, fallback: readonly string[]): readonly string[] {
+function parseSymbolList(
+  raw: string | undefined,
+  fallback: readonly string[],
+): readonly string[] {
   if (raw === undefined || raw.trim() === "") {
     return fallback;
   }
@@ -37,7 +31,9 @@ function parseSymbolList(raw: string | undefined, fallback: readonly string[]): 
 }
 
 /**
- * Canonical environment dependency access for the application.
+ * Canonical environment dependency access for the application. Every
+ * `process.env` read in the codebase happens through this object so the
+ * full set of external dependencies is discoverable in one file.
  */
 export const env = {
   get databaseUrl(): string {
@@ -52,54 +48,23 @@ export const env = {
   get terminalType(): string | undefined {
     return process.env.TERM;
   },
-  get gammaBaseUrl(): string {
-    return process.env.POLYMARKET_GAMMA_BASE_URL ?? defaultGammaBaseUrl;
-  },
-  get clobBaseUrl(): string {
-    return process.env.POLYMARKET_CLOB_BASE_URL ?? defaultClobBaseUrl;
-  },
-  get polymarketWsUrl(): string {
-    return process.env.POLYMARKET_WS_URL ?? defaultPolymarketWsUrl;
-  },
   get defaultAsset(): string {
     return (process.env.DEFAULT_ASSET ?? "BTC").toUpperCase();
   },
-  get priceSymbols(): readonly string[] {
-    return parseSymbolList(process.env.PRICE_SYMBOLS, [this.defaultAsset]);
+  get defaultSymbols(): readonly string[] {
+    return parseSymbolList(process.env.DEFAULT_SYMBOLS, [this.defaultAsset]);
   },
-  get coinbaseWsUrl(): string {
-    return process.env.COINBASE_WS_URL ?? defaultCoinbaseWsUrl;
+  get coinbaseRestBaseUrl(): string {
+    return process.env.COINBASE_REST_BASE_URL ?? defaultCoinbaseRestBaseUrl;
   },
-  get binanceWsUrl(): string {
-    return process.env.BINANCE_WS_URL ?? defaultBinanceWsUrl;
+  get binanceRestBaseUrl(): string {
+    return process.env.BINANCE_REST_BASE_URL ?? defaultBinanceRestBaseUrl;
   },
-  get geminiWsBaseUrl(): string {
-    return process.env.GEMINI_WS_BASE_URL ?? defaultGeminiWsBaseUrl;
+  get bitstampRestBaseUrl(): string {
+    return process.env.BITSTAMP_REST_BASE_URL ?? defaultBitstampRestBaseUrl;
   },
-  get bybitWsUrl(): string {
-    return process.env.BYBIT_WS_URL ?? defaultBybitWsUrl;
-  },
-  get bitstampWsUrl(): string {
-    return process.env.BITSTAMP_WS_URL ?? defaultBitstampWsUrl;
-  },
-  get bitfinexWsUrl(): string {
-    return process.env.BITFINEX_WS_URL ?? defaultBitfinexWsUrl;
-  },
-  get krakenWsUrl(): string {
-    return process.env.KRAKEN_WS_URL ?? defaultKrakenWsUrl;
-  },
-  get collectorSnapshotIntervalMs(): number {
-    return (
-      parsePositiveInt(
-        process.env.COLLECTOR_SNAPSHOT_INTERVAL_MS,
-        "COLLECTOR_SNAPSHOT_INTERVAL_MS",
-      ) ?? 1000
-    );
-  },
-  get collectorBookDepth(): number {
-    return (
-      parsePositiveInt(process.env.COLLECTOR_BOOK_DEPTH, "COLLECTOR_BOOK_DEPTH") ?? 20
-    );
+  get bitfinexRestBaseUrl(): string {
+    return process.env.BITFINEX_REST_BASE_URL ?? defaultBitfinexRestBaseUrl;
   },
   get logLevel(): string {
     return process.env.LOG_LEVEL ?? "info";

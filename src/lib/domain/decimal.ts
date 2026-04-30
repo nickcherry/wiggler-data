@@ -1,4 +1,4 @@
-import { ASSET_PRICE_SCALE, PRICE_SCALE, SIZE_SCALE } from "@wiggler/constants/markets";
+import { ASSET_PRICE_SCALE } from "@wiggler/constants/markets";
 
 /**
  * Parses a decimal string or number into integer scaled units. Truncates
@@ -37,21 +37,9 @@ function formatNumber(value: number): string {
 }
 
 /**
- * Scales a probability price (0..1) into PRICE_SCALE micro-units.
- */
-export function priceToE6(input: string | number): bigint {
-  return toScaledInt(input, PRICE_SCALE);
-}
-
-/**
- * Scales a share size into SIZE_SCALE micro-units.
- */
-export function sizeToE6(input: string | number): bigint {
-  return toScaledInt(input, SIZE_SCALE);
-}
-
-/**
  * Scales an underlying asset price (BTC/USD, ETH/USD, etc.) into 1e8 units.
+ * Same helper is reused for OHLCV `open/high/low/close/volume` since 1e8
+ * is the canonical precision for every CEX REST response we ingest.
  */
 export function assetPriceToE8(input: string | number): bigint {
   return toScaledInt(input, ASSET_PRICE_SCALE);

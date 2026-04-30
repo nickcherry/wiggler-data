@@ -1,21 +1,21 @@
+import { CANDLE_SOURCES } from "@wiggler/constants/candles";
 import { env } from "@wiggler/constants/env";
 import { defineCommand, defineFlagOption } from "@wiggler/lib/cli";
 import { createDatabase } from "@wiggler/lib/db/createDatabase";
 import { destroyDatabase } from "@wiggler/lib/db/destroyDatabase";
-import { getFiveMinuteWindow } from "@wiggler/lib/domain/marketWindow";
-import { fetchGammaEventBySlug } from "@wiggler/lib/polymarket/gammaClient";
-import { buildUpDownSlugFromWindow } from "@wiggler/lib/polymarket/slug";
 import { sql } from "kysely";
 import { z } from "zod";
 
 /**
- * Sanity-checks the runtime environment: env vars, DB connectivity, Gamma reachability.
+ * Sanity-checks the runtime environment before running a sync: env vars,
+ * database connectivity, schema state, and CEX REST reachability for
+ * every configured source.
  */
 export const doctorCommand = defineCommand({
   name: "doctor",
   summary: "Run a runtime health check",
   description:
-    "Verifies env vars, database connectivity, migration state, and Polymarket Gamma reachability.",
+    "Verifies env vars, database connectivity, migration state, and CEX REST endpoint reachability.",
   options: [
     defineFlagOption({
       key: "json",
@@ -25,7 +25,7 @@ export const doctorCommand = defineCommand({
   ],
   examples: ["bun wiggler doctor"],
   output: "Prints status checks for the local environment.",
-  sideEffects: "Connects to PostgreSQL and Gamma briefly.",
+  sideEffects: "Connects to PostgreSQL and probes every CEX REST endpoint with a HEAD request.",
   async run({ io, options }) {
     const checks: Array<{
       name: string;
@@ -39,55 +39,17 @@ export const doctorCommand = defineCommand({
       detail: env.databaseUrl ? maskDatabaseUrl(env.databaseUrl) : "missing",
     });
     checks.push({
-      name: "env.gammaBaseUrl",
+      name: "env.defaultSymbols",
       status: "ok",
-      detail: env.gammaBaseUrl,
+      detail: env.defaultSymbols.join(","),
     });
-    checks.push({
-      name: "env.polymarketWsUrl",
-      status: "ok",
-      detail: env.polymarketWsUrl,
-    });
-    checks.push({
-      name: "env.coinbaseWsUrl",
-      status: "ok",
-      detail: env.coinbaseWsUrl,
-    });
-    checks.push({
-      name: "env.binanceWsUrl",
-      status: "ok",
-      detail: env.binanceWsUrl,
-    });
-    checks.push({
-      name: "env.geminiWsBaseUrl",
-      status: "ok",
-      detail: env.geminiWsBaseUrl,
-    });
-    checks.push({
-      name: "env.bybitWsUrl",
-      status: "ok",
-      detail: env.bybitWsUrl,
-    });
-    checks.push({
-      name: "env.bitstampWsUrl",
-      status: "ok",
-      detail: env.bitstampWsUrl,
-    });
-    checks.push({
-      name: "env.bitfinexWsUrl",
-      status: "ok",
-      detail: env.bitfinexWsUrl,
-    });
-    checks.push({
-      name: "env.krakenWsUrl",
-      status: "ok",
-      detail: env.krakenWsUrl,
-    });
-    checks.push({
-      name: "env.priceSymbols",
-      status: "ok",
-      detail: env.priceSymbols.join(","),
-    });
+    for (const source of CANDLE_SOURCES) {
+      checks.push({
+        name: `env.${source}RestBaseUrl`,
+        status: "ok",
+        detail: restBaseUrlFor(source),
+      });
+    }
 
     let dbStatus: "ok" | "warn" | "fail" = "fail";
     let dbDetail = "unknown";
@@ -98,10 +60,10 @@ export const doctorCommand = defineCommand({
       dbDetail = "connected";
       const tables = await sql<{ table_name: string }>`
         select table_name from information_schema.tables
-        where table_schema = 'public' and table_name in ('markets','book_snapshots','book_levels','asset_price_snapshots')
+        where table_schema = 'public' and table_name in ('candles','candle_sync_runs')
       `.execute(db);
       const tableSet = new Set(tables.rows.map((r) => r.table_name));
-      const required = ["markets", "book_snapshots", "book_levels", "asset_price_snapshots"];
+      const required = ["candles", "candle_sync_runs"];
       const missing = required.filter((t) => !tableSet.has(t));
       if (missing.length > 0) {
         dbStatus = "warn";
@@ -115,26 +77,23 @@ export const doctorCommand = defineCommand({
     }
     checks.push({ name: "db.connection", status: dbStatus, detail: dbDetail });
 
-    let gammaStatus: "ok" | "warn" | "fail" = "fail";
-    let gammaDetail = "unknown";
-    try {
-      const probeSlug = buildUpDownSlugFromWindow(env.defaultAsset, getFiveMinuteWindow());
-      const result = await fetchGammaEventBySlug(probeSlug);
-      if (result.status === "ok") {
-        gammaStatus = "ok";
-        gammaDetail = `reachable; current slug ${probeSlug} resolved`;
-      } else if (result.status === "not_found") {
-        gammaStatus = "warn";
-        gammaDetail = `reachable; current slug ${probeSlug} not found yet`;
-      } else {
-        gammaStatus = "fail";
-        gammaDetail = `error ${result.httpStatus}`;
+    for (const source of CANDLE_SOURCES) {
+      const url = restBaseUrlFor(source);
+      try {
+        const response = await fetch(url, { method: "HEAD" });
+        checks.push({
+          name: `rest.${source}`,
+          status: response.status >= 200 && response.status < 500 ? "ok" : "warn",
+          detail: `HEAD ${url} → ${response.status}`,
+        });
+      } catch (error) {
+        checks.push({
+          name: `rest.${source}`,
+          status: "fail",
+          detail: error instanceof Error ? error.message : String(error),
+        });
       }
-    } catch (error) {
-      gammaStatus = "fail";
-      gammaDetail = error instanceof Error ? error.message : String(error);
     }
-    checks.push({ name: "polymarket.gamma", status: gammaStatus, detail: gammaDetail });
 
     const overall: "ok" | "warn" | "fail" = checks.some((c) => c.status === "fail")
       ? "fail"
@@ -158,6 +117,21 @@ export const doctorCommand = defineCommand({
     }
   },
 });
+
+function restBaseUrlFor(source: string): string {
+  switch (source) {
+    case "coinbase":
+      return env.coinbaseRestBaseUrl;
+    case "binance":
+      return env.binanceRestBaseUrl;
+    case "bitstamp":
+      return env.bitstampRestBaseUrl;
+    case "bitfinex":
+      return env.bitfinexRestBaseUrl;
+    default:
+      return "(unknown source)";
+  }
+}
 
 function maskDatabaseUrl(url: string): string {
   return url.replace(/:[^:@/]+@/, ":***@");

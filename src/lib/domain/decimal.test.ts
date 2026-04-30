@@ -1,33 +1,34 @@
-import { assetPriceToE8, fromScaledInt, priceToE6, sizeToE6 } from "@wiggler/lib/domain/decimal";
+import {
+  assetPriceToE8,
+  fromScaledInt,
+  toScaledInt,
+} from "@wiggler/lib/domain/decimal";
 import { describe, expect, test } from "bun:test";
 
-describe("priceToE6", () => {
-  test("scales 0.523 to 523000", () => {
-    expect(priceToE6("0.523")).toBe(523_000n);
+describe("toScaledInt", () => {
+  test("scales 0.523 at 1e6", () => {
+    expect(toScaledInt("0.523", 1_000_000)).toBe(523_000n);
   });
   test("scales whole numbers", () => {
-    expect(priceToE6("1")).toBe(1_000_000n);
+    expect(toScaledInt("1", 1_000_000)).toBe(1_000_000n);
+  });
+  test("truncates extra decimals beyond the scale", () => {
+    expect(toScaledInt("0.5234567", 1_000_000)).toBe(523_456n);
   });
   test("scales numeric input", () => {
-    expect(priceToE6(0.5)).toBe(500_000n);
+    expect(toScaledInt(0.5, 1_000_000)).toBe(500_000n);
   });
-  test("truncates extra decimals", () => {
-    expect(priceToE6("0.5234567")).toBe(523_456n);
-  });
-  test("rejects non-numeric", () => {
-    expect(() => priceToE6("abc")).toThrow();
-  });
-});
-
-describe("sizeToE6", () => {
-  test("scales 12.5 to 12500000", () => {
-    expect(sizeToE6("12.5")).toBe(12_500_000n);
+  test("rejects non-numeric input", () => {
+    expect(() => toScaledInt("abc", 1_000_000)).toThrow();
   });
 });
 
 describe("assetPriceToE8", () => {
   test("scales 76324.12 to 7632412000000", () => {
     expect(assetPriceToE8("76324.12")).toBe(7_632_412_000_000n);
+  });
+  test("handles BTC-style 8-decimal precision", () => {
+    expect(assetPriceToE8("0.00000001")).toBe(1n);
   });
 });
 
