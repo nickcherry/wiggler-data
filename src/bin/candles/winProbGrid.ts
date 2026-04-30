@@ -104,6 +104,20 @@ export const candlesWinProbGridCommand = defineCommand({
       description:
         "Risk default written into the output config: refuse to trade when remaining < this. Default 60 (we have no sub-minute training data).",
     }),
+    defineValueOption({
+      key: "trainEndIso",
+      long: "--train-end-iso",
+      valueName: "ISO",
+      schema: z.string().optional(),
+      description:
+        "ISO 8601 timestamp. Train only on anchors with open_time ≤ this. Used to leave a temporal-holdout window for out-of-sample calibration.",
+    }),
+    defineValueOption({
+      key: "trainStartIso",
+      long: "--train-start-iso",
+      valueName: "ISO",
+      schema: z.string().optional(),
+    }),
     defineFlagOption({
       key: "json",
       long: "--json",
@@ -147,6 +161,26 @@ export const candlesWinProbGridCommand = defineCommand({
     const anchorMode: "rolling" | "boundary" =
       anchorStepMin === intervalMin ? "boundary" : "rolling";
 
+    const trainStartMs = options.trainStartIso
+      ? parseIsoMs(options.trainStartIso, "--train-start-iso")
+      : undefined;
+    const trainEndMs = options.trainEndIso
+      ? parseIsoMs(options.trainEndIso, "--train-end-iso")
+      : undefined;
+    if (
+      trainStartMs !== undefined &&
+      trainEndMs !== undefined &&
+      trainStartMs >= trainEndMs
+    ) {
+      throw new CliUsageError(
+        "--train-start-iso must precede --train-end-iso",
+      );
+    }
+    const trainSlice =
+      trainStartMs !== undefined || trainEndMs !== undefined
+        ? `_train${trainStartMs ?? "BEGIN"}-${trainEndMs ?? "END"}`
+        : "";
+
     const db = createDatabase();
     try {
       const closes = await loadClosePoints(db, {
@@ -169,6 +203,7 @@ export const candlesWinProbGridCommand = defineCommand({
         intervalSec,
         labelSource,
         anchorMode,
+        suffix: trainSlice,
       });
       let cacheStatus: "hit" | "miss" | "skipped" = "skipped";
       let config: WigglerProbGridConfig | null = null;
@@ -187,6 +222,8 @@ export const candlesWinProbGridCommand = defineCommand({
           intervalSec,
           anchorStepMin,
           volLookbackMin: options.volLookbackMin,
+          trainStartMs,
+          trainEndMs,
         });
         config = buildWigglerProbGridConfig({
           grid,
@@ -223,6 +260,16 @@ export const candlesWinProbGridCommand = defineCommand({
     }
   },
 });
+
+function parseIsoMs(value: string, label: string): number {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    throw new CliUsageError(
+      `${label}: invalid ISO 8601 timestamp: ${value}`,
+    );
+  }
+  return ms;
+}
 
 function validateLabelSource(value: string): LookaheadSource {
   const allowed = new Set<string>(LOOKAHEAD_SOURCES);

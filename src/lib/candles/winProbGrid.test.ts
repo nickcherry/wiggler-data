@@ -279,12 +279,58 @@ describe("buildWinProbGrid", () => {
       intervalSec: 300,
       volLookbackMin: 5,
     });
-    // We expect 4 (remaining) × 4 (vol) × 13 (bps buckets) = 208 entries.
-    expect(grid.buckets.length).toBe(4 * 4 * DEFAULT_ABS_D_BPS_BOUNDARIES.length);
-    // First bucket should be remaining=60, volBin=low, bucketIdx=0
+    // 4 (remaining) × 4 (vol) × (2 leading sides × 13 bps buckets +
+    //   1 at_line bucket) = 4 × 4 × 27 = 432 entries.
+    expect(grid.buckets.length).toBe(
+      4 * 4 * (2 * DEFAULT_ABS_D_BPS_BOUNDARIES.length + 1),
+    );
+    // First bucket should be remaining=60, volBin=low, sideLeading=up_leading, bucketIdx=0
     expect(grid.buckets[0]!.remainingSec).toBe(60);
     expect(grid.buckets[0]!.volBin).toBe("low");
+    expect(grid.buckets[0]!.sideLeading).toBe("up_leading");
     expect(grid.buckets[0]!.absDBpsMin).toBe(0);
+    // Every emitted bucket has a defined tradable flag (false when count==0).
+    for (const b of grid.buckets) {
+      expect(b.tradable).toBe(b.count >= 500);
+    }
+  });
+
+  test("at_line buckets only emit at the [0, 2) abs-d-bps cell", () => {
+    const closes: ClosePoint[] = Array.from({ length: 60 }, (_, m) =>
+      close(m * 60_000, 1000 + m),
+    );
+    const grid = buildWinProbGrid({
+      closes,
+      intervalSec: 300,
+      volLookbackMin: 10,
+    });
+    const atLineBuckets = grid.buckets.filter(
+      (b) => b.sideLeading === "at_line",
+    );
+    // 4 (remaining) × 4 (vol) × 1 (only the [0, 2) cell) = 16
+    expect(atLineBuckets.length).toBe(4 * 4);
+    for (const b of atLineBuckets) {
+      expect(b.absDBpsMin).toBe(0);
+      expect(b.absDBpsMax).toBe(2);
+    }
+  });
+
+  test("tradable flag respects --min-bucket-count override", () => {
+    const closes: ClosePoint[] = Array.from({ length: 60 }, (_, m) =>
+      close(m * 60_000, 1000 + m),
+    );
+    const grid = buildWinProbGrid({
+      closes,
+      intervalSec: 300,
+      volLookbackMin: 10,
+      minBucketCount: 1,
+    });
+    // With minBucketCount=1, every populated bucket should be tradable.
+    for (const b of grid.buckets) {
+      if (b.count >= 1) {
+        expect(b.tradable).toBe(true);
+      }
+    }
   });
 
   /**
@@ -327,11 +373,12 @@ describe("buildWinProbGrid", () => {
     });
     // Anchor i=0 has line=1000 and final=1005 → +50 bps → Up wins.
     // Decision rows (elapsed=1..4) use closeAt[1..4] = 1000 each →
-    // d_bps = 0 each. They should land in the [0, 2) bucket — index 0.
-    // The tail bucket (≥75) should NEVER receive an i=0 row. Verify:
-    const tailBucketIdx = DEFAULT_ABS_D_BPS_BOUNDARIES.length - 1;
+    // d_bps = 0 each. They should land in the at_line bucket. The
+    // tail bucket (≥75 bps) should NEVER receive an i=0 row — verify:
+    const tailMin =
+      DEFAULT_ABS_D_BPS_BOUNDARIES[DEFAULT_ABS_D_BPS_BOUNDARIES.length - 1]!;
     const tailBuckets = grid.buckets.filter(
-      (b, idx) => idx % DEFAULT_ABS_D_BPS_BOUNDARIES.length === tailBucketIdx,
+      (b) => b.absDBpsMin === tailMin && b.absDBpsMax === null,
     );
     const tailCountTotal = tailBuckets.reduce((acc, b) => acc + b.count, 0);
     // Other anchors (i=1..6) may legitimately land in higher buckets

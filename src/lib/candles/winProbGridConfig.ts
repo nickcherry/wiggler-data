@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 
 import type { LookaheadSource } from "@wiggler/lib/candles/lookahead";
 import type {
+  SideLeading,
   VolBin,
   VolBinThresholds,
   WinProbGrid,
@@ -100,12 +101,16 @@ export type WigglerProbGridConfig = Readonly<{
     Readonly<{
       remaining_sec: number;
       vol_bin: VolBin;
+      side_leading: SideLeading;
       abs_d_bps_min: number;
       abs_d_bps_max: number | null;
       count: number;
       wins: number;
       p_win: number;
       p_win_lower: number;
+      /** True iff `count >= risk_defaults.min_bucket_count`. Wiggler
+       *  must refuse to trade any cell where this is false. */
+      tradable: boolean;
     }>
   >;
 }>;
@@ -175,6 +180,7 @@ export function computeGridHash(grid: WinProbGrid): string {
   const canonical = grid.buckets.map((b) => ({
     remaining_sec: b.remainingSec,
     vol_bin: b.volBin,
+    side_leading: b.sideLeading,
     abs_d_bps_min: b.absDBpsMin,
     abs_d_bps_max: b.absDBpsMax,
     count: b.count,
@@ -270,12 +276,14 @@ export function buildWigglerProbGridConfig(args: {
     grid: args.grid.buckets.map((b) => ({
       remaining_sec: b.remainingSec,
       vol_bin: b.volBin,
+      side_leading: b.sideLeading,
       abs_d_bps_min: b.absDBpsMin,
       abs_d_bps_max: b.absDBpsMax,
       count: b.count,
       wins: b.wins,
       p_win: round(b.pWin, 6),
       p_win_lower: round(b.pWinLower, 6),
+      tradable: b.tradable,
     })),
   };
 }

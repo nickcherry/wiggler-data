@@ -4,6 +4,7 @@ import {
   bucketAbsDBps,
   buildSeriesArrays,
   type ClosePoint,
+  type SideLeading,
   type VolBin,
 } from "@wiggler/lib/candles/winProbGrid";
 import type { WigglerProbGridConfig } from "@wiggler/lib/candles/winProbGridConfig";
@@ -84,9 +85,9 @@ function pBinIndex(value: number, boundaries: readonly number[]): number {
 }
 
 /**
- * Lookup table: (remaining_sec, vol_bin, abs_d_bps) → p_win_lower.
- * Built once per report from the grid; O(1) lookups inside the hot
- * loop.
+ * Lookup table: (remaining_sec, vol_bin, side_leading, abs_d_bps) →
+ * p_win_lower. Built once per report from the grid; O(1) lookups
+ * inside the hot loop.
  */
 function buildGridLookup(
   config: WigglerProbGridConfig,
@@ -96,7 +97,7 @@ function buildGridLookup(
     // Bucket index in the boundaries array — recover by scanning.
     const idx = config.abs_d_bps_boundaries.indexOf(cell.abs_d_bps_min);
     if (idx < 0) {continue;}
-    const key = `${cell.remaining_sec}|${cell.vol_bin}|${idx}`;
+    const key = `${cell.remaining_sec}|${cell.vol_bin}|${cell.side_leading}|${idx}`;
     out.set(key, cell.p_win_lower);
   }
   return out;
@@ -107,6 +108,11 @@ export function buildCalibrationReport(args: {
   closes: readonly ClosePoint[];
   volLookbackMin: number;
   binBoundaries?: readonly number[];
+  /** Inclusive `[testStartMs, testEndMs]` filter on anchor open_time.
+   *  When the grid was trained on a temporal prefix, set these to the
+   *  held-out suffix to get true out-of-sample calibration. */
+  testStartMs?: number;
+  testEndMs?: number;
 }): CalibrationReport {
   const intervalSec = args.config.interval_sec;
   const intervalMin = intervalSec / 60;
@@ -116,6 +122,8 @@ export function buildCalibrationReport(args: {
   const anchorStepMin = args.config.anchor_mode === "boundary" ? intervalMin : 1;
   const binBoundaries = args.binBoundaries ?? DEFAULT_BIN_BOUNDARIES;
   const lookup = buildGridLookup(args.config);
+  const testStartMs = args.testStartMs ?? -Infinity;
+  const testEndMs = args.testEndMs ?? Infinity;
 
   const series = buildSeriesArrays({
     closes: args.closes,
@@ -143,8 +151,11 @@ export function buildCalibrationReport(args: {
 
   // Identical traversal to buildWinProbGrid — replay the same anchors
   // and decisions so the calibration is on the same population the
-  // grid claims to predict.
+  // grid claims to predict (or a held-out temporal slice when
+  // testStartMs/testEndMs are set).
   for (let i = 0; i + intervalMin < series.totalMinutes; i += anchorStepMin) {
+    const anchorMs = series.baseMs + i * 60_000;
+    if (anchorMs < testStartMs || anchorMs > testEndMs) {continue;}
     const line = series.closeAt[i];
     const finalPx = series.closeAt[i + intervalMin];
     if (line == null || finalPx == null || line <= 0n) {continue;}
@@ -159,11 +170,13 @@ export function buildCalibrationReport(args: {
       if (vol == null) {continue;}
       const dBps = bpsChange(current, line);
       const absDBps = Math.abs(dBps);
+      const sideLeading: SideLeading =
+        dBps > 0 ? "up_leading" : dBps < 0 ? "down_leading" : "at_line";
       const currentSide: "up" | "down" = dBps >= 0 ? "up" : "down";
       const won = currentSide === winningSide;
       const volBin: VolBin = binVol(vol, volThresholds);
       const bucketIdx = bucketAbsDBps(absDBps, absDBpsBoundaries);
-      const key = `${remainingSec}|${volBin}|${bucketIdx}`;
+      const key = `${remainingSec}|${volBin}|${sideLeading}|${bucketIdx}`;
       const pWinLower = lookup.get(key);
       if (pWinLower === undefined) {continue;}
       const slotIdx = pBinIndex(pWinLower, binBoundaries);

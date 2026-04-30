@@ -100,10 +100,27 @@ export const VOL_BIN_TRAINING_PERCENTILES = {
 /** One close-price observation. */
 export type ClosePoint = Readonly<{ tsMs: number; closeE8: bigint }>;
 
+/**
+ * Which side currently leads (or whether the market is exactly at the
+ * line). `at_line` is its own bucket — Polymarket's tie-to-Up rule
+ * makes the exactly-equal case structurally asymmetric, and pooling
+ * it with `up_leading` would smear that bias across the [0, 2)
+ * absolute-distance bucket. Splitting also surfaces any directional
+ * skew (e.g. a venue's quote drift) that would otherwise be hidden by
+ * Up/Down pooling.
+ */
+export type SideLeading = "up_leading" | "down_leading" | "at_line";
+export const SIDES_LEADING: readonly SideLeading[] = [
+  "up_leading",
+  "down_leading",
+  "at_line",
+] as const;
+
 /** One bucket in the output grid. */
 export type WinProbBucket = Readonly<{
   remainingSec: number;
   volBin: VolBin;
+  sideLeading: SideLeading;
   absDBpsMin: number;
   /** `null` means open-ended (top tail). */
   absDBpsMax: number | null;
@@ -111,6 +128,10 @@ export type WinProbBucket = Readonly<{
   wins: number;
   pWin: number;
   pWinLower: number;
+  /** `count >= minBucketCount` AND `count > 0`. Wiggler must refuse
+   *  any trade where this is false. Replaces a runtime check that
+   *  could be forgotten. */
+  tradable: boolean;
 }>;
 
 export type WinProbGrid = Readonly<{
@@ -349,6 +370,16 @@ export function buildWinProbGrid(args: {
    * the rolling-anchor training pass.
    */
   anchorStepMin?: number;
+  /**
+   * Inclusive `[trainStartMs, trainEndMs]` filter on anchor-candle
+   * `open_time`. Anchors outside this window are skipped. Used by
+   * `--train-end-iso` and the temporal-holdout calibration workflow.
+   * Defaults to no filter (use everything).
+   */
+  trainStartMs?: number;
+  trainEndMs?: number;
+  /** Bucket-tradability threshold. Defaults match `DEFAULT_RISK_AND_FEE`. */
+  minBucketCount?: number;
 }): WinProbGrid {
   const intervalSec = args.intervalSec;
   if (intervalSec % 60 !== 0 || intervalSec < 120) {
@@ -391,10 +422,17 @@ export function buildWinProbGrid(args: {
     volLookbackMin,
   });
 
+  const trainStartMs = args.trainStartMs ?? -Infinity;
+  const trainEndMs = args.trainEndMs ?? Infinity;
+  const isInTrainWindow = (anchorMs: number): boolean =>
+    anchorMs >= trainStartMs && anchorMs <= trainEndMs;
+
   // First pass: collect decision-time recent-vol values so we can
   // derive the bin thresholds before bucketing.
   const decisionVolValues: number[] = [];
   for (let i = 0; i + intervalMin < series.totalMinutes; i += anchorStepMin) {
+    const anchorMs = series.baseMs + i * 60_000;
+    if (!isInTrainWindow(anchorMs)) {continue;}
     const line = series.closeAt[i];
     const finalPx = series.closeAt[i + intervalMin];
     if (line == null || finalPx == null || line <= 0n) {continue;}
@@ -439,6 +477,8 @@ export function buildWinProbGrid(args: {
   let lastIntervalEndOpenTimeMs: number | null = null;
 
   for (let i = 0; i + intervalMin < series.totalMinutes; i += anchorStepMin) {
+    const anchorMs = series.baseMs + i * 60_000;
+    if (!isInTrainWindow(anchorMs)) {continue;}
     const line = series.closeAt[i];
     const finalPx = series.closeAt[i + intervalMin];
     if (line == null || finalPx == null || line <= 0n) {continue;}
@@ -448,7 +488,6 @@ export function buildWinProbGrid(args: {
     } else {
       downWinAnchors++;
     }
-    const anchorMs = series.baseMs + i * 60_000;
     const intervalEndMs = series.baseMs + (i + intervalMin) * 60_000;
     if (firstAnchorOpenTimeMs === null) {
       firstAnchorOpenTimeMs = anchorMs;
@@ -464,11 +503,19 @@ export function buildWinProbGrid(args: {
       if (vol == null) {continue;}
       const dBps = bpsChange(current, line);
       const absDBps = Math.abs(dBps);
+      // SideLeading: at_line when exactly equal (tie-to-Up is a real
+      // edge here — Polymarket resolves ties to Up); strictly Up or
+      // Down otherwise. The "current side wins" label still uses the
+      // tie-to-Up rule so `at_line` rows record whether Up wins from
+      // a perfectly-equal start, which is the cleanest way to surface
+      // the structural asymmetry.
+      const sideLeading: SideLeading =
+        dBps > 0 ? "up_leading" : dBps < 0 ? "down_leading" : "at_line";
       const currentSide: "up" | "down" = dBps >= 0 ? "up" : "down";
       const won = currentSide === winningSide;
       const volBin = binVol(vol, volBinThresholds);
       const bucketIdx = bucketAbsDBps(absDBps, absDBpsBoundaries);
-      const key = `${remainingSec}|${volBin}|${bucketIdx}`;
+      const key = `${remainingSec}|${volBin}|${sideLeading}|${bucketIdx}`;
       const slot = counters.get(key);
       if (slot === undefined) {
         counters.set(key, { count: 1, wins: won ? 1 : 0 });
@@ -481,30 +528,39 @@ export function buildWinProbGrid(args: {
   }
 
   // Materialize buckets in deterministic order:
-  //   remainingSec ascending, vol bin in declared order, bucketIdx ascending.
+  //   remainingSec ↑, volBin (declared), sideLeading (declared), bucketIdx ↑.
+  // `at_line` only emits the [0, 2) bucket — by definition all
+  // `at_line` rows have abs_d_bps == 0. The other 12 cells are
+  // suppressed.
   const buckets: WinProbBucket[] = [];
+  const minBucketCount = args.minBucketCount ?? 500;
   for (const remainingSec of decisionRemainingSecs) {
     for (const volBin of VOL_BINS) {
-      for (let bIdx = 0; bIdx < absDBpsBoundaries.length; bIdx++) {
-        const key = `${remainingSec}|${volBin}|${bIdx}`;
-        const slot = counters.get(key) ?? { count: 0, wins: 0 };
-        const range = bucketRange(bIdx, absDBpsBoundaries);
-        const pWin = slot.count === 0 ? 0 : slot.wins / slot.count;
-        const pWinLower = wilsonLowerBound({
-          wins: slot.wins,
-          count: slot.count,
-          z: args.wilsonZ,
-        });
-        buckets.push({
-          remainingSec,
-          volBin,
-          absDBpsMin: range.min,
-          absDBpsMax: range.max,
-          count: slot.count,
-          wins: slot.wins,
-          pWin,
-          pWinLower,
-        });
+      for (const sideLeading of SIDES_LEADING) {
+        for (let bIdx = 0; bIdx < absDBpsBoundaries.length; bIdx++) {
+          if (sideLeading === "at_line" && bIdx !== 0) {continue;}
+          const key = `${remainingSec}|${volBin}|${sideLeading}|${bIdx}`;
+          const slot = counters.get(key) ?? { count: 0, wins: 0 };
+          const range = bucketRange(bIdx, absDBpsBoundaries);
+          const pWin = slot.count === 0 ? 0 : slot.wins / slot.count;
+          const pWinLower = wilsonLowerBound({
+            wins: slot.wins,
+            count: slot.count,
+            z: args.wilsonZ,
+          });
+          buckets.push({
+            remainingSec,
+            volBin,
+            sideLeading,
+            absDBpsMin: range.min,
+            absDBpsMax: range.max,
+            count: slot.count,
+            wins: slot.wins,
+            pWin,
+            pWinLower,
+            tradable: slot.count >= minBucketCount,
+          });
+        }
       }
     }
   }

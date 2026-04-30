@@ -75,6 +75,34 @@ export const candlesCalibrationReportCommand = defineCommand({
       valueName: "MIN",
       schema: z.coerce.number().int().min(5).default(30),
     }),
+    defineValueOption({
+      key: "testStartIso",
+      long: "--test-start-iso",
+      valueName: "ISO",
+      schema: z.string().optional(),
+      description:
+        "Restrict calibration to anchors with open_time ≥ this. Pair with --train-end-iso on candles:win-prob-grid for true out-of-sample validation.",
+    }),
+    defineValueOption({
+      key: "testEndIso",
+      long: "--test-end-iso",
+      valueName: "ISO",
+      schema: z.string().optional(),
+    }),
+    defineValueOption({
+      key: "trainEndIso",
+      long: "--train-end-iso",
+      valueName: "ISO",
+      schema: z.string().optional(),
+      description:
+        "If the cached grid was trained with --train-end-iso, pass the same value here so the right cache file is read.",
+    }),
+    defineValueOption({
+      key: "trainStartIso",
+      long: "--train-start-iso",
+      valueName: "ISO",
+      schema: z.string().optional(),
+    }),
     defineFlagOption({
       key: "json",
       long: "--json",
@@ -101,12 +129,29 @@ export const candlesCalibrationReportCommand = defineCommand({
       );
     }
     const anchorMode = options.anchorMode;
+    const trainStartMs = options.trainStartIso
+      ? parseIsoMs(options.trainStartIso, "--train-start-iso")
+      : undefined;
+    const trainEndMs = options.trainEndIso
+      ? parseIsoMs(options.trainEndIso, "--train-end-iso")
+      : undefined;
+    const trainSlice =
+      trainStartMs !== undefined || trainEndMs !== undefined
+        ? `_train${trainStartMs ?? "BEGIN"}-${trainEndMs ?? "END"}`
+        : "";
+    const testStartMs = options.testStartIso
+      ? parseIsoMs(options.testStartIso, "--test-start-iso")
+      : undefined;
+    const testEndMs = options.testEndIso
+      ? parseIsoMs(options.testEndIso, "--test-end-iso")
+      : undefined;
     const cachePath = winProbGridCachePath({
       symbol,
       timeframe,
       intervalSec,
       labelSource,
       anchorMode,
+      suffix: trainSlice,
     });
 
     const db = createDatabase();
@@ -135,6 +180,8 @@ export const candlesCalibrationReportCommand = defineCommand({
         config: cached.config,
         closes,
         volLookbackMin: options.volLookbackMin,
+        testStartMs,
+        testEndMs,
       });
       if (options.json) {
         io.writeStdout(`${JSON.stringify(report, null, 2)}\n`);
@@ -146,6 +193,16 @@ export const candlesCalibrationReportCommand = defineCommand({
     }
   },
 });
+
+function parseIsoMs(value: string, label: string): number {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    throw new CliUsageError(
+      `${label}: invalid ISO 8601 timestamp: ${value}`,
+    );
+  }
+  return ms;
+}
 
 function validateLabelSource(value: string): LookaheadSource {
   const allowed = new Set<string>(LOOKAHEAD_SOURCES);

@@ -23,6 +23,26 @@ The output of this stage is a calibrated probability grid, indexed by
 the empirical win count and a Wilson 95% one-sided lower bound on the
 true rate.
 
+## Asset quarantine (v1)
+
+The current cross-source `vwap` proxy and 1-year training window are
+appropriate for liquid majors but produce structurally biased grids
+for assets where venue coverage is patchy. As of v1:
+
+- **Trade-eligible (after diagnostics pass):** BTC, ETH, SOL, XRP, DOGE.
+- **Quarantined — do not trade until diagnostics explain:** HYPE, BNB.
+
+HYPE shows a ~3:1 Up/Down anchor imbalance and high near-line stickiness
+that almost certainly come from venue-composition drift (Coinbase HYPE
+only starts Feb 2026; Bitstamp Nov 2025 — the vwap proxy steps
+mechanically as new sources come online, manufacturing phantom
+directional moves). BNB shows the same pattern less severely.
+
+Run `bun wiggler candles:training-diagnostics --symbol <ASSET>` to see
+per-month anchor balance and per-month source composition. A run of
+months with `up_share` more than 5pp from 50% — especially across the
+exact months when a venue's row count jumps — is the smoking gun.
+
 ## Config schema (`wiggler-prob-grid-v1`)
 
 ```jsonc
@@ -83,22 +103,40 @@ true rate.
     "down_win_anchors": 261_440
   },
 
-  // The grid itself.
+  // The grid itself. Indexed by (remaining_sec, vol_bin,
+  // side_leading, abs_d_bps).
   "grid": [
     {
       "remaining_sec": 60,
       "vol_bin": "normal",
+      "side_leading": "up_leading",   // "up_leading" | "down_leading" | "at_line"
       "abs_d_bps_min": 20,
       "abs_d_bps_max": 25,
       "count": 1842,
       "wins": 1776,
       "p_win": 0.964169,
-      "p_win_lower": 0.954982
+      "p_win_lower": 0.954982,
+      "tradable": true                 // false iff count < min_bucket_count
     },
     // ...
   ]
 }
 ```
+
+`side_leading` is split into three values rather than pooled:
+
+- `up_leading` — `current_price > line_price`. Up wins if the lead survives.
+- `down_leading` — `current_price < line_price`. Down wins if the lead survives.
+- `at_line` — `current_price == line_price` exactly. Polymarket
+  resolves ties to Up, so this is structurally favored Up; treating it
+  as its own bucket avoids smearing the tie-to-Up bias across the
+  small Up-leading cells. `at_line` only emits the `[0, 2)` abs-d-bps
+  cell — by definition every `at_line` row has `abs_d_bps == 0`.
+
+`tradable` is `count >= min_bucket_count && count > 0`. Wiggler **must
+refuse** any trade where `tradable === false`. The flag is set at
+config-emission time so the runtime can't accidentally use a sparse
+bucket.
 
 The file lives at
 `tmp/win-prob-grid/{SYMBOL}_{TF}_{INTERVAL}s_{LABEL_SOURCE}_{anchor_mode}.json`
@@ -198,6 +236,11 @@ adjust the offsets, re-derive the table above and re-run that test.
 ## Validation workflow
 
 ```bash
+# 0. Diagnostics FIRST. If anchor up-share is more than 5pp from 50%
+#    in any sustained block of months, the vwap proxy is contaminated —
+#    do not trust the grid.
+bun wiggler candles:training-diagnostics --symbol BTC
+
 # 1. Train on rolling anchors (default — max sample size).
 bun wiggler candles:win-prob-grid
 
@@ -206,12 +249,24 @@ bun wiggler candles:win-prob-grid
 #    grids disagree on the high-confidence cells.
 bun wiggler candles:win-prob-grid --anchor-step-min 5
 
-# 3. Calibration: predicted-vs-realized by p_win_lower decile.
-#    Realized < predicted on any populated bin → over-confidence.
+# 3. In-sample calibration: predicted-vs-realized by p_win_lower
+#    decile against the same data the grid trained on. Useful as a
+#    sanity check that the bucketing is internally consistent.
 bun wiggler candles:calibration-report
 bun wiggler candles:calibration-report --anchor-mode boundary
 
-# 4. Opportunity: would the model produce enough tradable signals?
+# 4. OUT-OF-SAMPLE calibration (the real test). Train on the first 9
+#    months, validate on the last 3. Realized < predicted in any
+#    populated bin → the regime shifted and wiggler can't trust those
+#    cells live.
+bun wiggler candles:win-prob-grid --train-end-iso 2026-01-30T00:00:00Z
+bun wiggler candles:calibration-report \
+  --train-end-iso 2026-01-30T00:00:00Z \
+  --test-start-iso 2026-01-30T00:00:00Z
+
+# 5. Opportunity: how many TRADE-LEVEL (per-interval) signals would
+#    wiggler see per day? Four rows in the same 5m market are one
+#    trade opportunity, not four — the report counts both.
 bun wiggler candles:opportunity-report
 ```
 

@@ -49,11 +49,14 @@ export function winProbGridCachePath(args: {
   intervalSec: number;
   labelSource: LookaheadSource;
   anchorMode: "rolling" | "boundary";
+  /** Optional file-stem suffix used to distinguish temporal slices
+   *  (e.g. `_train1745000000000-1768000000000`). */
+  suffix?: string;
   cacheDir?: string;
 }): string {
   return join(
     args.cacheDir ?? DEFAULT_CACHE_DIR,
-    `${args.symbol}_${args.timeframe}_${args.intervalSec}s_${args.labelSource}_${args.anchorMode}.json`,
+    `${args.symbol}_${args.timeframe}_${args.intervalSec}s_${args.labelSource}_${args.anchorMode}${args.suffix ?? ""}.json`,
   );
 }
 

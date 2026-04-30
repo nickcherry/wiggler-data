@@ -75,6 +75,12 @@ export const candlesOpportunityReportCommand = defineCommand({
       description:
         "Comma-separated probability thresholds. Default: 0.70,0.80,0.90,0.95,0.98.",
     }),
+    defineValueOption({
+      key: "volLookbackMin",
+      long: "--vol-lookback-min",
+      valueName: "MIN",
+      schema: z.coerce.number().int().min(5).default(30),
+    }),
     defineFlagOption({
       key: "json",
       long: "--json",
@@ -136,6 +142,8 @@ export const candlesOpportunityReportCommand = defineCommand({
       }
       const report = buildOpportunityReport({
         config: cached.config,
+        closes,
+        volLookbackMin: options.volLookbackMin,
         thresholds,
       });
       if (options.json) {
@@ -177,28 +185,38 @@ function parseThresholds(csv: string): readonly number[] {
 
 function formatReport(report: OpportunityReport, cachePath: string): string {
   const lines: string[] = [];
-  lines.push(`asset:                ${report.asset}`);
-  lines.push(`interval_sec:         ${report.intervalSec}`);
-  lines.push(`anchor_mode:          ${report.anchorMode}`);
-  lines.push(`config:               ${cachePath}`);
-  lines.push(`training window:      ~${report.windowDays.toFixed(1)} days`);
+  lines.push(`asset:                  ${report.asset}`);
+  lines.push(`interval_sec:           ${report.intervalSec}`);
+  lines.push(`anchor_mode:            ${report.anchorMode}`);
+  lines.push(`config:                 ${cachePath}`);
+  lines.push(`training window:        ~${report.windowDays.toFixed(1)} days`);
   lines.push(
-    `tradable rows total:  ${report.tradableRows.toLocaleString("en-US")}  (after min_bucket_count filter)`,
+    `tradable rows scanned:  ${report.tradableRowsScanned.toLocaleString("en-US")}  (cells where count ≥ min_bucket_count)`,
+  );
+  lines.push(
+    `intervals scanned:      ${report.intervalsScanned.toLocaleString("en-US")}`,
   );
   lines.push("");
-  lines.push("threshold   total signals   per day    by remaining_sec / vol_bin");
+  lines.push(
+    "                    bucket-level          interval-level          avg",
+  );
+  lines.push(
+    "threshold      rows/day      total       ints/day      total       rows/int",
+  );
   for (const row of report.rows) {
-    const remaining = row.byRemainingSec
-      .filter((r) => r.signals > 0)
-      .map((r) => `${r.remainingSec}s:${r.signals}`)
-      .join(" ");
-    const vols = row.byVolBin
-      .filter((v) => v.signals > 0)
-      .map((v) => `${v.volBin}:${v.signals}`)
-      .join(" ");
     lines.push(
-      `${`p_lower≥${row.threshold.toFixed(2)}`.padEnd(11)} ${row.totalSignals.toLocaleString("en-US").padStart(13)}   ${row.signalsPerDay.toFixed(1).padStart(7)}    [${remaining}] [${vols}]`,
+      `${`p_lower≥${row.threshold.toFixed(2)}`.padEnd(13)} ${row.rowsPerDay.toFixed(1).padStart(7)}  ${row.rowsAbove.toLocaleString("en-US").padStart(10)}   ${row.intervalsPerDay.toFixed(1).padStart(7)}  ${row.intervalsSignaling.toLocaleString("en-US").padStart(10)}     ${row.meanRowsPerSignalingInterval.toFixed(2).padStart(5)}`,
     );
   }
+  lines.push("");
+  lines.push(
+    "  bucket-level: number of decision rows above threshold.",
+  );
+  lines.push(
+    "  interval-level: distinct 5m markets where AT LEAST ONE row crossed.",
+  );
+  lines.push(
+    "  Wiggler trades a market once per signal → interval-level is the realistic cap on trades.",
+  );
   return `${lines.join("\n")}\n`;
 }

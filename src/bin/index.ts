@@ -6,6 +6,7 @@ import { candlesLookaheadCommand } from "@wiggler/bin/candles/lookahead";
 import { candlesOpportunityReportCommand } from "@wiggler/bin/candles/opportunityReport";
 import { candlesStatusCommand } from "@wiggler/bin/candles/status";
 import { candlesSyncCommand } from "@wiggler/bin/candles/sync";
+import { candlesTrainingDiagnosticsCommand } from "@wiggler/bin/candles/trainingDiagnostics";
 import { candlesVwapCommand } from "@wiggler/bin/candles/vwap";
 import { candlesWinProbGridCommand } from "@wiggler/bin/candles/winProbGrid";
 import { dbMigrateCommand } from "@wiggler/bin/db/migrate";
@@ -29,6 +30,7 @@ export const wigglerCommands = [
   candlesWinProbGridCommand,
   candlesCalibrationReportCommand,
   candlesOpportunityReportCommand,
+  candlesTrainingDiagnosticsCommand,
 ] as const;
 
 export const wigglerCli = createCli({
