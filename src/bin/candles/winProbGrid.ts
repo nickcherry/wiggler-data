@@ -1,5 +1,6 @@
 import { type Timeframe, TIMEFRAMES } from "@wiggler/constants/candles";
 import { env } from "@wiggler/constants/env";
+import { getEligibility } from "@wiggler/lib/candles/eligibility";
 import {
   LOOKAHEAD_SOURCES,
   type LookaheadSource,
@@ -14,6 +15,7 @@ import {
 } from "@wiggler/lib/candles/winProbGridCache";
 import {
   buildWigglerProbGridConfig,
+  computeInputHash,
   DEFAULT_RISK_AND_FEE,
   type WigglerProbGridConfig,
 } from "@wiggler/lib/candles/winProbGridConfig";
@@ -225,11 +227,21 @@ export const candlesWinProbGridCommand = defineCommand({
           trainStartMs,
           trainEndMs,
         });
+        const eligibility = getEligibility(symbol) ?? {
+          asset: symbol,
+          quarantine: false,
+          quarantine_reasons: [],
+          eligible_for_research: true,
+          eligible_for_paper: false,
+          eligible_for_live: false,
+        };
         config = buildWigglerProbGridConfig({
           grid,
           asset: symbol,
           trainingLabelSource: labelSource,
           volLookbackMin: options.volLookbackMin,
+          inputHash: computeInputHash(closes),
+          eligibility,
           riskDefaults: {
             taker_fee_rate:
               options.takerFeeRate ?? DEFAULT_RISK_AND_FEE.taker_fee_rate,

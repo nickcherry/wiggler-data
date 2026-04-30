@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { candlesBundleCommand } from "@wiggler/bin/candles/bundle";
 import { candlesCalibrationReportCommand } from "@wiggler/bin/candles/calibrationReport";
 import { candlesDistributionsCommand } from "@wiggler/bin/candles/distributions";
 import { candlesLookaheadCommand } from "@wiggler/bin/candles/lookahead";
@@ -31,6 +32,7 @@ export const wigglerCommands = [
   candlesCalibrationReportCommand,
   candlesOpportunityReportCommand,
   candlesTrainingDiagnosticsCommand,
+  candlesBundleCommand,
 ] as const;
 
 export const wigglerCli = createCli({

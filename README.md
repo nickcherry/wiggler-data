@@ -84,15 +84,15 @@ bun wiggler candles:lookahead
 #    subsequent runs are sub-second
 bun wiggler candles:distributions
 
-# 5. Compute the calibrated win-probability grid — emits the
-#    `wiggler-prob-grid-v1` JSON config under `tmp/win-prob-grid/`
-bun wiggler candles:win-prob-grid
+# 5. Emit the handoff bundle wiggler-prod consumes — per-asset config
+#    + validation artifact + manifest under `tmp/bundle/`
+bun wiggler candles:bundle
 
-# 5b. Sanity-check the grid against itself: predicted vs realized
-bun wiggler candles:calibration-report
-
-# 5c. How many high-confidence signals would the model produce per day?
-bun wiggler candles:opportunity-report
+# Individual stages backing the bundle (run automatically by candles:bundle):
+#   bun wiggler candles:win-prob-grid
+#   bun wiggler candles:training-diagnostics --symbol BTC
+#   bun wiggler candles:calibration-report
+#   bun wiggler candles:opportunity-report
 
 # Coverage report — rows / earliest / latest per (source, symbol, timeframe)
 bun wiggler candles:status

@@ -46,6 +46,9 @@ The CLI is the operator-facing contract for wiggler.
     `p_win_lower` decile against the cached config.
   - `candles:opportunity-report` — count of decision states crossing
     each confidence threshold; per-day rate.
+  - `candles:bundle` — emits the wiggler-prod handoff bundle (per-asset
+    config + validation artifact + manifest) under `tmp/bundle/`. The
+    primary deliverable of this repo.
 
 ## Command Shape
 

@@ -1,9 +1,76 @@
 # Probability Grid
 
-`candles:win-prob-grid` is the pipeline stage that produces the
-deliverable: a calibrated `P(current_side_wins | state)` grid that
-wiggler reads at runtime to decide when to trade Polymarket fixed-window
-up/down markets.
+`candles:win-prob-grid` is the modeling stage. `candles:bundle` is the
+shipping stage: it produces the **handoff bundle** (per-asset config +
+validation artifact + manifest) that wiggler-prod consumes. This repo
+stops at that bundle — it does no execution, no order-book reasoning,
+and no live trading.
+
+## The handoff bundle
+
+`bun wiggler candles:bundle` writes everything wiggler-prod needs into
+`tmp/bundle/`:
+
+```
+tmp/bundle/
+  manifest.json                          # machine-readable index
+  manifest.md                            # human-readable index
+  BTC_300s_boundary.config.json          # the wiggler-prob-grid-v1 config
+  BTC_300s_boundary.validation.json      # diagnostics + calibration + opportunity
+  ETH_300s_boundary.config.json
+  ETH_300s_boundary.validation.json
+  ...
+```
+
+Boundary mode (`anchor_step_min = 5` for a 5m market) is the bundle
+default — it matches the actual Polymarket fixed-window market cadence
+and is the regime to trust when rolling and boundary disagree on
+high-confidence cells.
+
+Each config carries an `eligibility` block. Wiggler-prod **must** check
+`eligibility.eligible_for_paper` and `eligibility.eligible_for_live`
+before trading. v1 status:
+
+| Asset                    | research | paper | live | quarantine |
+|:-------------------------|:--------:|:-----:|:----:|:----------:|
+| BTC, ETH, SOL, XRP, DOGE | ✓        | ✓     |      |            |
+| HYPE, BNB                | ✓        |       |      | ⚠          |
+| (any asset)              | —        | —     | —    | —          |
+
+No asset is live-eligible yet — see `manifest.md`'s "Why no asset is
+live-eligible yet" section for the gating reasons.
+
+The validation artifact next to each config carries:
+
+- **In-sample calibration** — predicted-vs-realized by `p_win_lower`
+  decile against the same data the grid trained on. Sanity check that
+  bucket math is internally consistent.
+- **Out-of-sample calibration** — train on a 9-month prefix, validate
+  on the held-out 3-month suffix. This is the real gate: realized
+  win rate must be at least the predicted lower bound on every
+  populated cell wiggler intends to trade out of.
+- **Diagnostics** — tie counts, per-month Up/Down anchor balance, and
+  per-month vwap source composition. Surfaces venue-coverage drift
+  (the HYPE/BNB issue).
+- **Opportunity report** — both bucket-level (decision rows above
+  threshold) and **interval-level** (distinct 5m markets where any
+  row crossed) signal counts. Wiggler trades at most once per
+  interval, so the interval-level count is the realistic cap.
+
+Regenerate with:
+
+```bash
+bun wiggler candles:sync
+bun wiggler candles:vwap
+bun wiggler candles:bundle --train-end-iso 2026-01-30T00:00:00Z
+```
+
+## The model behind the bundle
+
+The rest of this doc is the math powering the bundle. If you only need
+to consume the bundle from wiggler-prod, the schema and validation
+fields are documented in the per-config JSON itself; this section is
+the reference for changing the bundle's shape or training procedure.
 
 ## What problem this solves
 

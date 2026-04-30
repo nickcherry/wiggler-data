@@ -1,8 +1,10 @@
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
+import type { AssetEligibility } from "@wiggler/lib/candles/eligibility";
 import type { LookaheadSource } from "@wiggler/lib/candles/lookahead";
 import type {
+  ClosePoint,
   SideLeading,
   VolBin,
   VolBinThresholds,
@@ -41,11 +43,20 @@ export type WigglerProbGridConfig = Readonly<{
   git: Readonly<{ commit_sha: string | null; dirty: boolean }>;
   /** Source of training-time price data. NOT the live resolution feed. */
   training_input: Readonly<{
+    /** Internal lookahead-source key — what column the data came from. */
     label_source: LookaheadSource;
+    /** Public-facing kind. `vwap_chainlink_proxy` flags the cross-source
+     *  vwap as a stand-in for the live Chainlink resolution feed.
+     *  Wiggler-prod compares this against its expected source kind. */
+    label_source_kind: "vwap_chainlink_proxy" | "single_venue_chainlink_proxy";
     label_source_note: string;
     rowcount: number;
     window_start_ms: number | null;
     window_end_ms: number | null;
+    /** SHA-256 of the canonical (tsMs, closeE8) pairs that fed the
+     *  grid. Two runs with byte-identical input data produce the same
+     *  hash; any candle change flips it. */
+    input_hash: string;
   }>;
   /** What live wiggler should treat as authoritative at runtime. */
   resolution_source: Readonly<{
@@ -57,6 +68,11 @@ export type WigglerProbGridConfig = Readonly<{
   /** SHA-256 of the canonical-JSON `grid` array. Lets wiggler detect
    *  config drift without diffing the whole file. */
   config_hash: string;
+
+  /** Per-asset eligibility decision. Wiggler-prod must check
+   *  `eligible_for_paper` / `eligible_for_live` before trading any
+   *  market backed by this config. */
+  eligibility: AssetEligibility;
 
   // ---------- Bucket definitions ----------
   abs_d_bps_boundaries: readonly number[];
@@ -172,6 +188,23 @@ export function readGitProvenance(): Readonly<{
 }
 
 /**
+ * SHA-256 of the canonical (tsMs, closeE8) pairs the model trained
+ * on. Two runs that consumed byte-identical close prices produce the
+ * same hash; any candle revision (open_time shift, late close
+ * correction) flips it.
+ */
+export function computeInputHash(closes: readonly ClosePoint[]): string {
+  const hash = createHash("sha256");
+  for (const c of closes) {
+    hash.update(c.tsMs.toString());
+    hash.update("|");
+    hash.update(c.closeE8.toString());
+    hash.update("\n");
+  }
+  return hash.digest("hex");
+}
+
+/**
  * SHA-256 over the JSON-stringified buckets in declared order. Two
  * configs with the same model output produce identical hashes
  * regardless of incidental field reordering or whitespace.
@@ -214,6 +247,11 @@ export function buildWigglerProbGridConfig(args: {
   asset: string;
   trainingLabelSource: LookaheadSource;
   volLookbackMin: number;
+  /** SHA-256 of the closes used. Caller computes this so the config
+   *  hash and input hash stay testable independent of the grid math. */
+  inputHash: string;
+  /** Eligibility for this asset (paper / live / quarantine). */
+  eligibility: AssetEligibility;
   generatedAtIso?: string;
   git?: Readonly<{ commit_sha: string | null; dirty: boolean }>;
   riskDefaults?: Partial<RiskAndFeeDefaults>;
@@ -222,6 +260,12 @@ export function buildWigglerProbGridConfig(args: {
   const intervalMin = args.grid.intervalSec / 60;
   const anchorMode: "rolling" | "boundary" =
     args.grid.anchorStepMin === intervalMin ? "boundary" : "rolling";
+  const labelSourceKind:
+    | "vwap_chainlink_proxy"
+    | "single_venue_chainlink_proxy" =
+    args.trainingLabelSource === "vwap"
+      ? "vwap_chainlink_proxy"
+      : "single_venue_chainlink_proxy";
   const labelSourceNote =
     args.trainingLabelSource === "vwap"
       ? "wiggler-data cross-source 1m VWAP across coinbase, binance, bitstamp. Used as a Chainlink proxy: at training time we have no historical Chainlink data, so basis risk versus the live resolution feed is unmeasured."
@@ -240,16 +284,19 @@ export function buildWigglerProbGridConfig(args: {
     git: args.git ?? readGitProvenance(),
     training_input: {
       label_source: args.trainingLabelSource,
+      label_source_kind: labelSourceKind,
       label_source_note: labelSourceNote,
       rowcount: args.grid.totalRows,
       window_start_ms: args.grid.firstAnchorOpenTimeMs,
       window_end_ms: args.grid.lastIntervalEndOpenTimeMs,
+      input_hash: args.inputHash,
     },
     resolution_source: {
       intended: resolutionMeta,
       proxy_basis_risk: "unmeasured",
     },
     config_hash: computeGridHash(args.grid),
+    eligibility: args.eligibility,
     abs_d_bps_boundaries: args.grid.absDBpsBoundaries,
     remaining_sec_buckets: args.grid.decisionRemainingSecs,
     vol_bins: {
