@@ -5,7 +5,7 @@ import { destroyDatabase } from "@wiggler/lib/db/destroyDatabase";
 import { sql } from "kysely";
 import { z } from "zod";
 
-const PUBLIC_TABLES = ["candle_sync_runs", "candles"] as const;
+const PUBLIC_TABLES = ["candle_sync_runs", "candle_vwap", "candles"] as const;
 
 /**
  * Truncates every wiggler application table. Schema is preserved.

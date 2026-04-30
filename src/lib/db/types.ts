@@ -71,9 +71,28 @@ export interface CandleSyncRunsTable {
   readonly error: NullableDatabaseText;
 }
 
+/**
+ * Cross-source volume-weighted average price for one
+ * `(symbol, timeframe, open_time)`. `vwap_e8` is the volume-weighted mean
+ * of each source's typical price `(high+low+close)/3` for that bucket;
+ * `total_volume_e8` is the denominator that produced it; `source_count`
+ * is how many sources had a candle for that bucket (1..4).
+ */
+export interface CandleVwapTable {
+  readonly symbol: string;
+  readonly timeframe: string;
+  readonly open_time: DatabaseTimestamp;
+  readonly open_time_ms: DatabaseBigint;
+  readonly vwap_e8: DatabaseBigint;
+  readonly total_volume_e8: DatabaseBigint;
+  readonly source_count: number;
+  readonly computed_at: DefaultedDatabaseTimestamp;
+}
+
 export interface Database {
   readonly candles: CandlesTable;
   readonly candle_sync_runs: CandleSyncRunsTable;
+  readonly candle_vwap: CandleVwapTable;
 }
 
 export type DatabaseClient = Kysely<Database>;

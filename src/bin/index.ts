@@ -2,6 +2,7 @@
 
 import { candlesStatusCommand } from "@wiggler/bin/candles/status";
 import { candlesSyncCommand } from "@wiggler/bin/candles/sync";
+import { candlesVwapCommand } from "@wiggler/bin/candles/vwap";
 import { dbMigrateCommand } from "@wiggler/bin/db/migrate";
 import { dbResetCommand } from "@wiggler/bin/db/reset";
 import { dbRollbackCommand } from "@wiggler/bin/db/rollback";
@@ -17,6 +18,7 @@ export const wigglerCommands = [
   dbResetCommand,
   candlesSyncCommand,
   candlesStatusCommand,
+  candlesVwapCommand,
 ] as const;
 
 export const wigglerCli = createCli({
