@@ -17,6 +17,72 @@ export const LOOKAHEAD_METRICS = [
 export type LookaheadMetric = (typeof LOOKAHEAD_METRICS)[number];
 
 /**
+ * One-line descriptions of each metric, surfaced under the metric
+ * heading in the human-readable distribution report.
+ */
+export const LOOKAHEAD_METRIC_DESCRIPTIONS: Readonly<
+  Record<LookaheadMetric, string>
+> = {
+  max_abs_excursion_bps:
+    "Biggest move (either direction) reached during the window. max(max_up_move_bps, max_down_move_bps).",
+  close_to_close_abs_return_bps:
+    "Absolute return from anchor close to end-of-window close. |10_000 × (end_price / start_price − 1)|.",
+  range_bps:
+    "Spread from highest high to lowest low within the window. 10_000 × (future_high / future_low − 1).",
+  max_up_move_bps:
+    "Biggest upward move from anchor close to highest point in the window. Signed — negative when price never rose above the anchor.",
+  max_down_move_bps:
+    "Biggest downward move from anchor close to lowest point in the window. Signed — negative when price never fell below the anchor.",
+};
+
+/**
+ * Lightweight fingerprint of the lookahead-features data for one
+ * `(symbol, timeframe)`. Used to invalidate the on-disk distribution
+ * cache: if the source data changed since the cache was written, both
+ * `rowCount` and `latestOpenTimeMs` will move.
+ */
+export type LookaheadFingerprint = Readonly<{
+  rowCount: number;
+  latestOpenTimeMs: number | null;
+}>;
+
+/**
+ * Returns the cheap data-shape fingerprint described on
+ * `LookaheadFingerprint`. The query is index-only-scan-eligible on the
+ * existing `candle_lookahead_features_symbol_lookahead_idx` and runs
+ * in a few milliseconds.
+ */
+export async function getLookaheadFingerprint(
+  db: DatabaseClient,
+  args: Readonly<{ symbol: string; timeframe: Timeframe }>,
+): Promise<LookaheadFingerprint> {
+  const result = await sql<{ cnt: string; latest_ms: string | null }>`
+    SELECT
+      COUNT(*)::bigint                  AS cnt,
+      MAX(open_time_ms)                 AS latest_ms
+    FROM candle_lookahead_features
+    WHERE symbol = ${args.symbol}
+      AND timeframe = ${args.timeframe}
+  `.execute(db);
+  const row = result.rows[0];
+  return {
+    rowCount: row ? Number(row.cnt) : 0,
+    latestOpenTimeMs: row && row.latest_ms !== null ? Number(row.latest_ms) : null,
+  };
+}
+
+/**
+ * `true` when two fingerprints refer to identical data shape. Used by
+ * the cache layer to decide if a previously written cache is still valid.
+ */
+export function fingerprintsMatch(
+  a: LookaheadFingerprint,
+  b: LookaheadFingerprint,
+): boolean {
+  return a.rowCount === b.rowCount && a.latestOpenTimeMs === b.latestOpenTimeMs;
+}
+
+/**
  * Distribution summary for one (source, lookahead) cell of one metric.
  * `count` is the row count behind the percentiles — useful for sanity
  * checking against `candle_lookahead_features` row counts and for
